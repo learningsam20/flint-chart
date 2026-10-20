@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { pathToFileURL } from 'node:url';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createServer } from '../src/server.js';
 
@@ -49,18 +51,90 @@ afterAll(async () => {
   await server?.close();
 });
 
+describe('MCP server with client roots', () => {
+  it('looks up a relative data.url in the folders the client announces', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'flint-roots-'));
+    writeFileSync(join(dir, 'sales.csv'), 'region,revenue\nEast,120\nWest,90\n');
+    const rootsServer = createServer();
+    const rootsClient = new Client({ name: 'flint-mcp-roots', version: '0.0.0' }, { capabilities: { roots: {} } });
+    rootsClient.setRequestHandler(ListRootsRequestSchema, async () => ({ roots: [{ uri: pathToFileURL(dir).href }] }));
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await rootsServer.connect(serverTransport);
+    await rootsClient.connect(clientTransport);
+    try {
+      const result: any = await rootsClient.callTool({
+        name: 'validate_chart',
+        arguments: {
+          backend: 'vegalite',
+          data: { url: 'sales.csv' },
+          chart_spec: { chartType: 'Bar Chart', encodings: { x: 'region', y: 'revenue' } },
+        },
+      });
+      expect(JSON.parse(result.content[0].text).valid).toBe(true);
+    } finally {
+      await rootsClient.close();
+      await rootsServer.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('MCP server', () => {
   it('lists the chart tools', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
+      'add_chart',
       'compile_chart',
+      'create_board',
       'create_chart_view',
+      'get_flint_skill',
       'list_chart_types',
+      'list_interaction_presets',
       'list_themes',
+      'read_board',
+      'remove_chart',
       'render_chart',
+      'restore_board',
+      'restore_chart_view',
+      'set_board_layout',
+      'set_board_theme',
+      'update_board',
+      'update_chart',
       'validate_chart',
     ]);
+  });
+
+  it('get_flint_skill returns the same text as the skill resources', async () => {
+    for (const [skill, uri] of [
+      ['chart', 'flint://agent-skill'],
+      ['theme', 'flint://theme-skill'],
+      ['interaction', 'flint://interaction-skill'],
+      ['board', 'flint://board-skill'],
+    ]) {
+      const res: any = await client.callTool({ name: 'get_flint_skill', arguments: { skill } });
+      const resource: any = await client.readResource({ uri });
+      expect(res.isError, skill).toBeFalsy();
+      expect(res.content[0].text, skill).toBe(resource.contents[0].text);
+    }
+  });
+
+  it('get_flint_skill returns one section, or the headings for an unknown one', async () => {
+    const res: any = await client.callTool({
+      name: 'get_flint_skill',
+      arguments: { skill: 'interaction', section: 'Update the chart' },
+    });
+    const text: string = res.content[0].text;
+    expect(text.startsWith('## Update the chart\n')).toBe(true);
+    expect(text).toContain('### Step 2 — choose ops');
+    expect(text).not.toContain('## Use Flint in an application');
+
+    const bad: any = await client.callTool({
+      name: 'get_flint_skill',
+      arguments: { skill: 'interaction', section: 'Change the chart' },
+    });
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0].text).toContain('"Update the chart"');
   });
 
   it('render_chart returns inline PNG image content', async () => {
@@ -141,6 +215,28 @@ describe('MCP server', () => {
     }
   });
 
+  it('list_interaction_presets describes every preset with its options', async () => {
+    const all: any = await client.callTool({ name: 'list_interaction_presets', arguments: {} });
+    const { presets } = JSON.parse(all.content[0].text);
+    expect(presets.length).toBeGreaterThan(20);
+    const highlight = presets.find((preset: any) => preset.type === 'click-highlight');
+    expect(highlight.requires).toContain('elements');
+    expect(highlight.defaultReset).toEqual(['click-none', 'escape']);
+    expect(highlight.options.map((option: any) => option.name)).toEqual(['dimOpacity', 'targets', 'reset']);
+
+    const pie: any = await client.callTool({ name: 'list_interaction_presets', arguments: { chartType: 'Pie Chart' } });
+    const pieTypes = JSON.parse(pie.content[0].text).presets.map((preset: any) => preset.type);
+    expect(pieTypes).toContain('brush-angle');
+    expect(pieTypes).not.toContain('navigate');
+
+    const one: any = await client.callTool({ name: 'list_interaction_presets', arguments: { type: 'navigate' } });
+    expect(JSON.parse(one.content[0].text).presets).toHaveLength(1);
+
+    const bad: any = await client.callTool({ name: 'list_interaction_presets', arguments: { type: 'zoom' } });
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0].text).toContain('Unknown interaction preset');
+  });
+
   it('list_chart_types enumerates chart types per backend', async () => {
     const res: any = await client.callTool({
       name: 'list_chart_types',
@@ -177,6 +273,109 @@ describe('MCP server', () => {
     const dropped = payload.warnings.filter((warning: any) => warning.code === 'unsupported_interaction');
     expect(dropped).toHaveLength(1);
     expect(dropped[0].message).toContain('"legend-toggle" requires a discrete legend; Bar Chart has none');
+  });
+
+  it('validate_chart and create_chart_view take updates beside the input, and reject a malformed layer', async () => {
+    const base = {
+      data: { values: [{ region: 'East', revenue: 120 }, { region: 'West', revenue: 90 }] },
+      semantic_types: { revenue: 'Quantity' },
+      chart_spec: { chartType: 'Bar Chart', encodings: { x: 'region', y: 'revenue' } },
+    };
+    const layer = { id: 'agent', ops: [{ op: 'set-style', targets: [{ select: { key: { region: 'East' } } }], value: { state: 'emphasized' } }] };
+    const ok: any = await client.callTool({ name: 'validate_chart', arguments: { ...base, backend: 'vegalite', updates: [layer] } });
+    expect(JSON.parse(ok.content[0].text).valid).toBe(true);
+    expect(ok.content[1].text).toContain('- agent:\n  ✓ emphasizes marks where region = East');
+    const shorthand = {
+      id: 'goal',
+      ops: [{ op: 'set-overlay', name: 'goal', value: { mark: 'rule', role: 'reference', data: { values: [{ v: 100 }] }, encodings: { y: 'v' } } }],
+    };
+    const off: any = await client.callTool({ name: 'validate_chart', arguments: { ...base, backend: 'vegalite', updates: [shorthand] } });
+    expect(off.content[1].text).toContain('✗ overlay "goal" (rule, 1 row): encodings.y must be { "field": "v" }, not "v".');
+    const bad: any = await client.callTool({
+      name: 'validate_chart',
+      arguments: { ...base, backend: 'vegalite', updates: [layer, { id: 'agent', ops: [] }] },
+    });
+    expect(bad.isError).toBeFalsy();
+    const payload = JSON.parse(bad.content[0].text);
+    expect(payload.valid).toBe(false);
+    expect(payload.errors[0]).toMatchObject({ code: 'invalid_updates' });
+    expect(payload.errors[0].message).toContain('updates[1]: duplicate id "agent"');
+    // An unknown op name never reaches the handler: the schema enum rejects it.
+    const unknownOp: any = await client.callTool({
+      name: 'validate_chart',
+      arguments: { ...base, backend: 'vegalite', updates: [{ id: 'agent', ops: [{ op: 'highlight' }] }] },
+    });
+    expect(unknownOp.isError).toBe(true);
+    expect(unknownOp.content[0].text).toContain('set-style');
+    const view: any = await client.callTool({ name: 'create_chart_view', arguments: { ...base, updates: [layer] } });
+    expect(view.isError).toBeFalsy();
+    expect(view.content[0].text).toContain('Agent updates (yours):\n- agent:\n  ✓ emphasizes marks where region = East');
+    expect(view.structuredContent).toBeUndefined();
+    expect(view._meta.flint.updates).toEqual([layer]);
+    const viewBad: any = await client.callTool({ name: 'create_chart_view', arguments: { ...base, updates: [{ id: '', ops: [] }] } });
+    expect(viewBad.isError).toBe(true);
+    expect(viewBad.content[0].text).toContain('Chart spec has errors: updates[0]: "id" must be a non-empty string.');
+    expect(viewBad.content[0].text).toContain('No chart was drawn; the card shows this reason.');
+    expect(viewBad._meta.flint).toEqual({ error: 'updates[0]: "id" must be a non-empty string.' });
+    const viewOff: any = await client.callTool({ name: 'create_chart_view', arguments: { ...base, updates: [layer, shorthand] } });
+    expect(viewOff.isError).toBeFalsy();
+    expect(viewOff._meta.flint.updates).toEqual([layer, shorthand]);
+    expect(viewOff.content[0].text).toMatch(/^1 of 2 update ops do not apply \(✗ below\); the chart draws without them\./);
+    expect(viewOff.content[0].text).toContain('✗ overlay "goal"');
+  });
+
+  it('create_chart_view opens a chart as its table when asked, and draws a Table chart type as a table', async () => {
+    const data = { values: [{ region: 'East', revenue: 120 }, { region: 'West', revenue: 90 }] };
+    const bars = { data, chart_spec: { chartType: 'Bar Chart', encodings: { x: 'region', y: 'revenue' } } };
+    const asTable: any = await client.callTool({ name: 'create_chart_view', arguments: { ...bars, view: 'table' } });
+    expect(asTable.content[0].text).toContain('Opens as the table of the rows it draws');
+    expect(asTable._meta.flint.view).toBe('table');
+    const asChart: any = await client.callTool({ name: 'create_chart_view', arguments: bars });
+    expect(asChart._meta.flint.view).toBeUndefined();
+    const table: any = await client.callTool({ name: 'create_chart_view', arguments: { data, chart_spec: { chartType: 'Table', encodings: {} }, view: 'table' } });
+    expect(table.isError).toBeFalsy();
+    expect(table.content[0].text).not.toContain('Opens as the table');
+    expect(table._meta.flint.view).toBeUndefined();
+  });
+
+  it('create_chart_view draws nothing for an invalid spec', async () => {
+    const res: any = await client.callTool({
+      name: 'create_chart_view',
+      arguments: { ...barChart, chart_spec: { ...barChart.chart_spec, chartType: 'Not A Real Chart' } },
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('call create_chart_view again, which opens a new card');
+    expect(res._meta.flint.input).toBeUndefined();
+    expect(res._meta.flint.error).toContain('Not A Real Chart');
+  });
+
+  it('a misshapen op is rejected with its shape, and the schema lists every op shape', async () => {
+    const base = {
+      data: { values: [{ region: 'East', revenue: 120 }, { region: 'West', revenue: 90 }] },
+      chart_spec: { chartType: 'Bar Chart', encodings: { x: 'region', y: 'revenue' } },
+    };
+    const note = { op: 'set-annotation', target: { select: { key: { region: 'West' } } }, value: { text: 'Lowest' } };
+    const ok: any = await client.callTool({
+      name: 'validate_chart',
+      arguments: { ...base, backend: 'vegalite', updates: [{ id: 'agent', ops: [note] }] },
+    });
+    expect(JSON.parse(ok.content[0].text).valid).toBe(true);
+    for (const op of [
+      { op: 'set-annotation', foo: 1 },
+      { op: 'set-annotation', annotations: [{ kind: 'rule', x: '2022-12-01', label: 'ChatGPT launch' }] },
+    ]) {
+      const bad: any = await client.callTool({
+        name: 'create_chart_view',
+        arguments: { ...base, updates: [{ id: 'agent', ops: [op] }] },
+      });
+      expect(bad.isError).toBe(true);
+      expect(bad.content[0].text).toContain('set-annotation has a missing or malformed "target". Shape:');
+    }
+    const { tools } = await client.listTools();
+    const view = tools.find((tool) => tool.name === 'create_chart_view')!;
+    const schemaText = JSON.stringify(view.inputSchema);
+    expect(schemaText).toContain("set-annotation { target: UpdateTarget, value: { text, anchor?: 'segment' | 'point' } | null }");
+    expect(view.description).toContain('pass interaction_spec');
   });
 
   it('render_chart surfaces assembly errors as isError', async () => {
@@ -226,6 +425,18 @@ describe('MCP server', () => {
     expect(skillText).toContain('bare `ThemeSpec`');
   });
 
+  it('exposes the bundled interaction-author skill as a resource', async () => {
+    const { resources } = await client.listResources();
+    const skill = resources.find((r) => r.uri === 'flint://interaction-skill');
+    expect(skill?.mimeType).toBe('text/markdown');
+    expect(skill?.annotations?.audience).toContain('assistant');
+
+    const read = await client.readResource({ uri: 'flint://interaction-skill' });
+    const skillText = resourceText(read.contents[0]);
+    expect(skillText).toContain('# flint-chart: interactions and updates on a chart');
+    expect(skillText).toContain('Return the bare object');
+  });
+
   it('registers the create_chart_view MCP App tool linked to its UI resource', async () => {
     const { tools } = await client.listTools();
     const view = tools.find((t) => t.name === 'create_chart_view');
@@ -237,7 +448,7 @@ describe('MCP server', () => {
       arguments: { ...barChart },
     });
     expect(res.isError).toBeFalsy();
-    expect(res.structuredContent?.input?.chart_spec?.chartType).toBe('Bar Chart');
+    expect(res._meta?.flint?.input?.chart_spec?.chartType).toBe('Bar Chart');
     expect(res.content[0].text).toContain('Bar Chart');
   });
 
@@ -275,6 +486,19 @@ describe('MCP server', () => {
     }
   });
 
+  it('exposes a prompt that embeds the interaction-author skill', async () => {
+    const { prompts } = await client.listPrompts();
+    expect(prompts.map((p) => p.name)).toContain('author_flint_interaction');
+
+    const prompt = await client.getPrompt({ name: 'author_flint_interaction' });
+    const resourceMessage = prompt.messages.find((m) => m.content.type === 'resource');
+    expect(resourceMessage?.content.type).toBe('resource');
+    if (resourceMessage?.content.type === 'resource') {
+      expect(resourceMessage.content.resource.uri).toBe('flint://interaction-skill');
+      expect(resourceText(resourceMessage.content.resource)).toContain('interaction_spec');
+    }
+  });
+
   it('keeps the bundled MCP skill asset in sync with the repo skill', () => {
     const repoSkill = readFileSync(
       new URL('../../../agent-skills/flint-chart-author/SKILL.md', import.meta.url),
@@ -297,6 +521,40 @@ describe('MCP server', () => {
       'utf8',
     );
     expect(bundledSkill).toBe(repoSkill);
+  });
+
+  it('keeps the Copilot plugin version and MCP dependency aligned with the package', () => {
+    const pluginRoot = new URL('../../../.github/extensions/flint-chart/', import.meta.url);
+    const manifest = JSON.parse(readFileSync(new URL('.plugin/plugin.json', pluginRoot), 'utf8'));
+    const mcp = JSON.parse(readFileSync(new URL('.mcp.json', pluginRoot), 'utf8'));
+    const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+
+    expect(manifest).toMatchObject({
+      name: 'flint-chart',
+      version,
+      skills: './skills/',
+      mcpServers: './.mcp.json',
+    });
+    expect(mcp.mcpServers.flint).toEqual({
+      command: 'npx',
+      args: ['--yes', `flint-chart-mcp@${version}`],
+      cwd: '${PLUGIN_ROOT}',
+    });
+  });
+
+  it('bundles the current authoring skill with native Canvas guidance', () => {
+    const repoSkill = readFileSync(
+      new URL('../../../agent-skills/flint-chart-author/SKILL.md', import.meta.url),
+      'utf8',
+    );
+    const canvasSkill = readFileSync(
+      new URL('../../../.github/extensions/flint-chart/skills/flint-chart-author/SKILL.md', import.meta.url),
+      'utf8',
+    );
+
+    expect(canvasSkill.startsWith(`${repoSkill.trimEnd()}\n\n## Copilot CLI chart canvas\n`)).toBe(true);
+    expect(canvasSkill).toContain('prefer it over `create_chart_view`');
+    expect(canvasSkill).toContain('resolved inline `data.values`');
   });
 
   it('reads a local data.url file and inlines its rows', async () => {
@@ -323,7 +581,7 @@ describe('MCP server', () => {
     }
   });
 
-  it('inlines local data.url rows into create_chart_view structuredContent', async () => {
+  it('inlines local data.url rows into the create_chart_view payload', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'flint-mcp-view-data-'));
     const dataServer = createServer();
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -340,12 +598,22 @@ describe('MCP server', () => {
       expect(res.isError).toBeFalsy();
       // The host UI renders client-side and cannot read local files, so the
       // server must hand it inline rows, not the original data.url.
-      const viewInput = res.structuredContent?.input;
+      const viewInput = res._meta?.flint?.input;
       expect(viewInput?.data?.url).toBeUndefined();
       expect(viewInput?.data?.values).toEqual([
         { region: 'North', revenue: 120 },
         { region: 'South', revenue: 90 },
       ]);
+      const restored: any = await dataClient.callTool({
+        name: 'restore_chart_view',
+        arguments: { ...barChart, data: { url: csvPath } },
+      });
+      expect(restored.structuredContent?.input?.data?.values).toEqual(viewInput.data.values);
+      const broken: any = await dataClient.callTool({
+        name: 'restore_chart_view',
+        arguments: { ...barChart, chart_spec: { ...barChart.chart_spec, chartType: 'No Such Chart' } },
+      });
+      expect(broken.isError).toBe(true);
     } finally {
       await dataClient.close();
       await dataServer.close();

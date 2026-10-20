@@ -12,7 +12,10 @@ export default defineConfig({
     'excel/index': 'src/excel/index.ts',
     'image-charts/index': 'src/image-charts/index.ts',
     'validate/index': 'src/validate/index.ts',
+    'validate/links': 'src/validate/links.ts',
     'interactive/index': 'src/interactive/index.ts',
+    'render/index': 'src/render/index.ts',
+    'react/index': 'src/react/index.ts',
     'vegalite/interactive': 'src/vegalite/interactive.ts',
     'echarts/interactive': 'src/echarts/interactive.ts',
     'chartjs/interactive': 'src/chartjs/interactive.ts',
@@ -29,7 +32,8 @@ export default defineConfig({
   treeshake: true,
   target: 'es2020',
   external: [
-    'vega', 'vega-lite', 'vega-tooltip', 'echarts', 'chart.js', 'highcharts', 'plotly.js', 'plotly.js-dist-min',
-    '../vegalite/interactive', '../echarts/interactive', '../chartjs/interactive', '../plotly/interactive',
+    'vega', 'vega-lite', 'vega-tooltip', 'echarts', 'chart.js', 'highcharts', 'plotly.js', 'plotly.js-dist-min', 'react',
+    '../vegalite/interactive', '../echarts/interactive', '../chartjs/interactive', '../highcharts/interactive', '../plotly/interactive',
+    '../validate/links',
   ],
 });

@@ -1,7 +1,9 @@
 import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { Star } from 'lucide-react';
 import { LocaleLink } from '../i18n/LocaleLink';
 import { useLocale } from '../i18n/LocaleContext';
 import { stripLocale } from '../i18n/paths';
@@ -59,28 +61,54 @@ export function SiteNavBar(_props: { flush?: boolean } = {}) {
         flexShrink: 0,
       }}
     >
-      <BrandLink />
+      <BrandLink active={logical === '/'} />
 
       <nav className="site-nav-scroll" style={{ display: 'flex', alignItems: 'center', gap: 16, flex: 1, minWidth: 0 }}>
-        <NavLink to="/" active={logical === '/'}>
-          {t('nav.about')}
-        </NavLink>
         <NavLink to="/mcp" active={logical.startsWith('/mcp')}>
           {t('nav.mcp')}
         </NavLink>
         <NavLink to="/themes" active={logical.startsWith('/themes')}>
           {t('nav.themes')}
         </NavLink>
-        <NavLink to="/gallery" active={logical.startsWith('/gallery') || logical.startsWith('/wall')}>
-          {t('nav.gallery')}
+        <NavLink to="/interactions" active={logical === '/interactions'}>
+          {t('nav.interactions')}
+          <Star
+            size={12}
+            fill="#e5b23c"
+            color="#b8860b"
+            aria-hidden="true"
+            focusable="false"
+            style={{ marginLeft: 4, verticalAlign: '-1px' }}
+          />
         </NavLink>
+        <NavMenu
+          logicalPath={logical}
+          label={t('nav.gallery')}
+          active={logical.startsWith('/gallery') || logical.startsWith('/wall')
+            || logical.startsWith('/interactions/')}
+          items={[
+            { to: '/gallery', label: t('nav.chartGallery') },
+            { to: '/interactions/gallery', label: t('nav.interactionGallery') },
+            { to: '/interactions/advanced', label: t('nav.advancedInteractions') },
+          ]}
+        />
         <NavLink
           to="/documentation"
           active={logical.startsWith('/documentation') || logical.startsWith('/tutorials')}
         >
           {t('nav.documentation')}
         </NavLink>
-        <PlaygroundsMenu logicalPath={logical} />
+        <NavMenu
+          logicalPath={logical}
+          label={t('nav.playgrounds')}
+          active={logical.startsWith('/editor') || logical.startsWith('/theme-lab')
+            || logical.startsWith('/playgrounds/')}
+          items={[
+            { to: '/editor', label: t('nav.editor') },
+            { to: '/theme-lab', label: t('nav.themeLab'), icon: 'lab' },
+            { to: '/playgrounds/auto-layout', label: t('nav.autoLayoutPlayground') },
+          ]}
+        />
       </nav>
 
       <div className="site-nav-actions" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -95,24 +123,43 @@ export function SiteNavBar(_props: { flush?: boolean } = {}) {
   );
 }
 
-function PlaygroundsMenu({ logicalPath }: { logicalPath: string }) {
-  const { t } = useTranslation();
+function NavMenu({ logicalPath, label, active, items }: {
+  logicalPath: string;
+  label: string;
+  active: boolean;
+  items: readonly { to: string; label: string; icon?: 'lab' }[];
+}) {
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const [position, setPosition] = useState({ top: 0, left: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
-  const active = logicalPath.startsWith('/editor')
-  || logicalPath.startsWith('/theme-lab') || logicalPath.startsWith('/playgrounds/');
+  const menuRef = useRef<HTMLDivElement>(null);
   const underline = active || hovered || open;
 
-  useEffect(() => setOpen(false), [logicalPath]);
+  useEffect(() => setOpen(false), [logicalPath, label]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
+    const updatePosition = () => {
+      const bounds = containerRef.current?.getBoundingClientRect();
+      if (bounds) setPosition({
+        top: bounds.bottom + 6,
+        left: Math.max(8, Math.min(bounds.left, window.innerWidth - 202)),
+      });
+    };
+    updatePosition();
     const onPointerDown = (event: PointerEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (!containerRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
     };
     document.addEventListener('pointerdown', onPointerDown);
-    return () => document.removeEventListener('pointerdown', onPointerDown);
+    document.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('scroll', updatePosition, true);
+      window.removeEventListener('resize', updatePosition);
+    };
   }, [open]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -120,20 +167,19 @@ function PlaygroundsMenu({ logicalPath }: { logicalPath: string }) {
       setOpen(false);
       containerRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
     }
-    if (event.key === 'ArrowDown' && !open) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
       setOpen(true);
       window.requestAnimationFrame(() => {
-        containerRef.current?.querySelector<HTMLAnchorElement>('[role="menuitem"]')?.focus();
+        const links = [...(menuRef.current?.querySelectorAll<HTMLAnchorElement>('[role="menuitem"]') ?? [])];
+        const current = links.findIndex((link) => link === document.activeElement);
+        const next = event.key === 'ArrowDown'
+          ? (current + 1) % links.length
+          : (current < 0 ? links.length - 1 : (current - 1 + links.length) % links.length);
+        links[next]?.focus();
       });
     }
   };
-
-  const items = [
-    { to: '/editor', label: t('nav.editor') },
-    { to: '/theme-lab', label: t('nav.themeLab'), icon: 'lab' as const },
-    { to: '/playgrounds/auto-layout', label: t('nav.autoLayoutPlayground') },
-  ];
 
   return (
     <div
@@ -173,7 +219,7 @@ function PlaygroundsMenu({ logicalPath }: { logicalPath: string }) {
             transition: 'text-decoration-color 120ms ease',
           }}
         >
-          {t('nav.playgrounds')}
+          {label}
         </span>
         <span
           aria-hidden="true"
@@ -186,14 +232,15 @@ function PlaygroundsMenu({ logicalPath }: { logicalPath: string }) {
           {open ? '▴' : '▾'}
         </span>
       </button>
-      {open ? (
+      {open ? createPortal(
         <div
+          ref={menuRef}
           role="menu"
-          aria-label={t('nav.playgrounds')}
+          aria-label={label}
           style={{
-            position: 'absolute',
-            top: 'calc(100% + 6px)',
-            left: 0,
+            position: 'fixed',
+            top: position.top,
+            left: position.left,
             zIndex: 300,
             display: 'flex',
             flexDirection: 'column',
@@ -203,6 +250,7 @@ function PlaygroundsMenu({ logicalPath }: { logicalPath: string }) {
             border: `1px solid ${siteTheme.border}`,
             borderRadius: 7,
             background: siteTheme.surface,
+            fontFamily: siteTheme.fontSans,
             boxShadow: '0 8px 28px rgba(31, 35, 40, 0.14)',
           }}
         >
@@ -212,6 +260,8 @@ function PlaygroundsMenu({ logicalPath }: { logicalPath: string }) {
               to={item.to}
               role="menuitem"
               className="site-nav-menu-item"
+              aria-current={logicalPath === item.to || logicalPath.startsWith(`${item.to}/`) ? 'page' : undefined}
+              onClick={() => setOpen(false)}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -234,7 +284,8 @@ function PlaygroundsMenu({ logicalPath }: { logicalPath: string }) {
               {item.label}
             </LocaleLink>
           ))}
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );
@@ -268,17 +319,22 @@ function NavLink({ to, active, children }: { to: string; active: boolean; childr
   );
 }
 
-function BrandLink() {
+function BrandLink({ active }: { active: boolean }) {
   const [hovered, setHovered] = useState(false);
   return (
     <LocaleLink
       to="/"
+      aria-current={active ? 'page' : undefined}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
         ...brandStyle,
         color: hovered ? siteTheme.accent : siteTheme.text,
-        transition: 'color 120ms ease',
+        textDecorationLine: active || hovered ? 'underline' : 'none',
+        textDecorationThickness: 2,
+        textUnderlineOffset: 6,
+        textDecorationColor: active ? siteTheme.text : 'rgba(0, 0, 0, 0.22)',
+        transition: 'color 120ms ease, text-decoration-color 120ms ease',
       }}
     >
       flint-chart

@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { changeset, parse, View } from 'vega';
+import { expressionInterpreter } from 'vega-interpreter';
 import { compile } from 'vega-lite';
-import { assembleVegaLite } from '../src/vegalite/assemble';
+import { scaleAwareCanvasPicking } from '../src/vegalite/interactive';
+import { rendererElement, vegaRendererOrigin } from '../src/vegalite/interactions/hit-adapter';
+import { assembleVegaLite, indexAxisOf } from '../src/vegalite/assemble';
 import { axisHighlight, brushAngle, brushX, brushZoom, clickAnnotate, clickHighlight, dragReorder, externalInteraction, inspect, legendToggle, navigate, select } from '../src/interactive/interactions';
 import type { CanvasInteractionDef, ClickHighlightOptions, RenderHit, SemanticElement, SemanticTarget } from '../src/interactive/interactions';
 import { dragTrigger } from '../src/interactive/triggers';
@@ -34,6 +37,7 @@ import {
     injectVegaNavigationSignals,
     injectVegaReorderSignal,
 } from '../src/vegalite/interactions/compile';
+import { vegaLiteTemporalAxisPlans } from '../src/vegalite/interactions/live-layout';
 import { angularSectorPath } from '../src/interactive/geometry/angular';
 import {
     arcIntersectsAngularSector,
@@ -44,6 +48,8 @@ import {
     clientToPlotPoint,
     clientToRendererPoint,
     clientToLayoutPoint,
+    curvePieces,
+    curveValueAt,
     facetPlotFrameAt,
     INTERACTION_KEY,
     INTERACTION_LEGEND_CHANNEL,
@@ -67,6 +73,14 @@ import {
     sceneItems,
     tolerantInspectHits,
     continuousLegendSegmentCount,
+    clippedBounds,
+    isPickable,
+    itemVisibility,
+    nearestSceneItem,
+    nextItemInDirection,
+    pointInClip,
+    polygonHits,
+    regionHits,
 } from '../src/vegalite/interactions/hit-adapter';
 import {
     AXIS_HOVER_STORE,
@@ -94,7 +108,8 @@ import { INTERACTION_CAPABILITIES } from '../src/core/interaction-spec';
 import { lineChartDef } from '../src/vegalite/templates/line';
 import { bumpChartDef } from '../src/vegalite/templates/bump';
 import { slopeChartDef } from '../src/vegalite/templates/slope';
-import { enrichTargetWithSourceProvenance } from '../src/vegalite/interactions/runtime';
+import { enrichTargetWithSourceProvenance, keyboardTargetItems, nearestReorderHit } from '../src/vegalite/interactions/runtime';
+import { INTERACTION_ROW } from '../src/core/interaction-semantics';
 import { regressionDef } from '../src/vegalite/templates/scatter';
 import { mapDef, choroplethDef } from '../src/vegalite/templates/map';
 import { densityPlotDef } from '../src/vegalite/templates/density';
@@ -289,6 +304,22 @@ describe('Vega-Lite semantic interactions', () => {
         expect((update.ops[0] as any).value.candidates[0]).toEqual({ connection: 'center', priority: 0 });
     });
 
+    it('keeps a Regression\u2019s dots selectable when a house redraws its circles as squares', async () => {
+        const values = [1, 2, 3, 4, 5].map((x) => ({ x, y: x * 2 + (x % 2) }));
+        const spec = assembleVegaLite({
+            data: { values },
+            semantic_types: { x: 'Quantity', y: 'Quantity' },
+            chart_spec: { chartType: 'Regression', encodings: { x: 'x', y: 'y' } },
+            theme_spec: { id: 'squares', geometry: { point: { shape: 'square' } } },
+        } as never) as any;
+        const { compiled } = instrument(spec);
+        const view = new View(parse(compiled), { renderer: 'none' });
+        await view.runAsync();
+        const dots = sceneItems(view).filter((item) => item.mark.marktype === 'symbol' && item.datum?.[INTERACTION_KEY] != null);
+        expect(dots.length).toBe(values.length);
+        expect(dots.every((item) => item.shape === 'square')).toBe(true);
+    });
+
     it('preserves source provenance through an assembled histogram plan', async () => {
         const sourceRecords = [1.7, 1.9, 2.1, 2.4, 3.1, 3.4].map((duration) => ({
             'Duration (min)': duration,
@@ -329,6 +360,81 @@ describe('Vega-Lite semantic interactions', () => {
             field: 'Duration (min)', range: { start, end }, count: expectedRecords.length,
         });
         expect(enriched?.elements[0].records).toEqual(expectedRecords);
+        view.finalize();
+    });
+
+    it('stamps each inline row with its position so provenance is a lookup', async () => {
+        const sourceRecords = ['2008-06-02', '2008-06-09', '2008-07-07', '2008-07-14'].map((week, index) => ({
+            Week: week, Price: 3.9 + index / 10,
+        }));
+        const spec = assembleVegaLite({
+            data: { values: sourceRecords },
+            semantic_types: { Week: 'Date', Price: 'Quantity' },
+            chart_spec: { chartType: 'Line Chart', encodings: { x: 'Week', y: 'Price' } },
+        } as never) as any;
+        const { plan, compiled } = instrument(spec, [brushX()]);
+        if (!plan?.resolve) throw new Error('Expected an instrumented line plan');
+        expect(plan.rowIndexed).toBe(true);
+        expect(spec.transform[0]).toEqual({ window: [{ op: 'row_number', as: INTERACTION_ROW }] });
+
+        const view = new View(parse(compiled), { renderer: 'none' });
+        await view.runAsync();
+        const segments = sceneItems(view).filter((item) => item.mark.marktype === 'line');
+        const hit = renderHit(segments[1]);
+        if (!hit) throw new Error('Expected a line segment hit');
+        expect(typeof hit.datum.Week).not.toBe('string');
+        const target = plan.resolve(
+            { gesture: 'click', role: 'mark', hits: [hit] },
+            { allHits: [hit], keyField: INTERACTION_KEY },
+        );
+        const enriched = enrichTargetWithSourceProvenance(target, plan);
+        expect(enriched?.elements[0].records).toEqual([plan.sourceRecords[1], plan.sourceRecords[2]]);
+        expect(enriched?.elements[0].records?.[0]).toBe(plan.sourceRecords[1]);
+        expect(enriched?.elements[0].records).toEqual(sourceRecordsForRenderedRecords(
+            target!.elements[0].records!, plan.sourceRecords, plan.provenanceFields, plan.temporalProvenanceFields, plan.rangeProvenance,
+        ));
+        expect(Object.keys(enriched!.elements[0].value)).not.toContain(INTERACTION_ROW);
+
+        const source = compiled.data.find((dataset: any) => dataset.values?.length === sourceRecords.length)?.name;
+        const swapped = [{ Week: '2020-03-02', Price: 2.4 }, { Week: '2020-03-09', Price: 2.2 }];
+        view.change(source, changeset().remove(() => true).insert(swapped));
+        await view.runAsync();
+        const renumbered = sceneItems(view).filter((item) => item.mark.marktype === 'line');
+        expect(renumbered.map((item) => item.datum[INTERACTION_ROW])).toEqual([1]);
+        view.finalize();
+    });
+
+    it('resolves a folded static series point to its one source row', async () => {
+        const sourceRecords = [2019, 2020, 2021].map((year, index) => ({
+            Year: String(year), Science: 500 + index, Reading: 480 - index,
+        }));
+        const spec = assembleVegaLite({
+            data: { values: sourceRecords },
+            semantic_types: { Year: 'Year', Science: 'Quantity', Reading: 'Quantity' },
+            chart_spec: { chartType: 'Line Chart', encodings: { x: 'Year', y: ['Science', 'Reading'] } },
+        } as never) as any;
+        const { plan, compiled } = instrument(spec, [clickHighlight()]);
+        if (!plan?.resolve) throw new Error('Expected an instrumented static-series plan');
+        expect(plan.rowIndexed).toBe(true);
+
+        const view = new View(parse(compiled), { renderer: 'none' });
+        await view.runAsync();
+        const segments = sceneItems(view).filter((item) => item.mark.marktype === 'line');
+        expect(segments).toHaveLength(4);
+        const hit = renderHit(segments[0]);
+        if (!hit) throw new Error('Expected a segment hit');
+        const target = plan.resolve(
+            { gesture: 'click', role: 'mark', hits: [hit] },
+            { allHits: [hit], keyField: INTERACTION_KEY },
+        );
+        const enriched = enrichTargetWithSourceProvenance(target, plan);
+        const records = enriched?.elements[0].records ?? [];
+        expect(records).toHaveLength(2);
+        expect(new Set(records.map((record) => plan.sourceRecords.indexOf(record))).size).toBe(2);
+        expect(records.every((record) => plan.sourceRecords.includes(record))).toBe(true);
+        expect(records).toEqual(sourceRecordsForRenderedRecords(
+            target!.elements[0].records!, plan.sourceRecords, plan.provenanceFields, plan.temporalProvenanceFields, plan.rangeProvenance,
+        ));
         view.finalize();
     });
 
@@ -404,6 +510,7 @@ describe('Vega-Lite semantic interactions', () => {
 
     it('interpolates a smooth continuous value-axis rule between line observations', () => {
         const segment = {
+            stroke: '#e45756',
             bounds: { x1: 10, x2: 90, y1: 20, y2: 80 },
             datum: { [INTERACTION_KEY]: 'alpha', Index: 0, Series: 'Alpha' },
             endDatum: { [INTERACTION_KEY]: 'alpha', Index: 10, Series: 'Alpha' },
@@ -419,6 +526,7 @@ describe('Vega-Lite semantic interactions', () => {
 
         expect(acquisition.coordinate).toBe(50);
         expect(acquisition.valueCoordinates).toEqual([50]);
+        expect(acquisition.valueColors).toEqual(['#e45756']);
         expect(indexInspectAcquisition(
             [segment], { x: 90, y: 20 }, 'x', { show: 'all', seriesBy: 'Series' }, true,
         )).toMatchObject({ coordinate: 90, valueCoordinates: [20], hits: [expect.any(Object)] });
@@ -456,7 +564,53 @@ describe('Vega-Lite semantic interactions', () => {
         );
 
         expect(nearby).toMatchObject({ coordinate: 50, valueCoordinates: [30], hits: [expect.any(Object)] });
-        expect(distant).toEqual({ coordinate: 58, valueCoordinates: [], hits: [] });
+        expect(distant).toEqual({ coordinate: 58, valueCoordinates: [], hits: [], snapped: false });
+    });
+
+    it('chooses the index axis the series run along', () => {
+        expect(indexAxisOf({ x: { field: 'month', type: 'temporal' }, y: { field: 'sales', type: 'quantitative' } })).toBe('x');
+        expect(indexAxisOf({ x: { field: 'sales', type: 'quantitative' }, y: { field: 'month', type: 'temporal' } })).toBe('y');
+        expect(indexAxisOf({ x: { field: 'sales', type: 'quantitative' }, y: { field: 'team', type: 'nominal' } })).toBe('y');
+        expect(indexAxisOf({ x: { field: 'a', type: 'quantitative' }, y: { field: 'b', type: 'quantitative' } })).toBe('x');
+        const vertical = assembleVegaLite({
+            data: { values: [{ month: '2026-01', sales: 3 }, { month: '2026-02', sales: 5 }] },
+            semantic_types: { month: 'YearMonth', sales: 'Quantity' },
+            chart_spec: { chartType: 'Line Chart', encodings: { x: 'sales', y: 'month' } },
+        } as never) as any;
+        expect(vertical._interactionSemantics.indexAxis).toBe('y');
+        expect(vertical._interactionSemantics.capabilities).toContain('index');
+    });
+
+    it('reads a curved line where it is drawn, not on the chord between its points', () => {
+        const points = [{ x: 0, y: 10 }, { x: 10, y: 20 }, { x: 20, y: 5 }];
+        const step = curvePieces(points, 'step-after')!;
+        expect(curveValueAt(step, 'x', 5)).toBe(10);
+        expect(curveValueAt(step, 'x', 15)).toBe(20);
+        const monotone = curvePieces(points, 'monotone')!;
+        expect(curveValueAt(monotone, 'x', 10)).toBeCloseTo(20, 6);
+        expect(curveValueAt(monotone, 'x', 20)).toBeCloseTo(5, 6);
+        // A monotone curve flattens into the peak, so it reads above the straight chord near it.
+        expect(curveValueAt(monotone, 'x', 8)!).toBeGreaterThan(18);
+        expect(curveValueAt(monotone, 'x', 30)).toBeNull();
+    });
+
+    it('reads a curved segment of a line mark on its curve', () => {
+        const siblings = [{ x: 0, y: 10 }, { x: 10, y: 20 }];
+        const mark: any = { marktype: 'line', role: 'mark' };
+        mark.items = siblings.map((point, index) => ({
+            ...point,
+            mark,
+            interpolate: 'step-after',
+            stroke: '#4c78a8',
+            bounds: { x1: 0, x2: 10, y1: 10, y2: 20 },
+            datum: { [INTERACTION_KEY]: `p${index}`, Series: 'A' },
+            interactionGeometry: { kind: 'segment', points: [siblings[0], siblings[1]], offset: { x: 0, y: 0 } },
+            endDatum: { [INTERACTION_KEY]: 'p1', Series: 'A' },
+        }));
+        const acquisition = indexInspectAcquisition(
+            [mark.items[0]], { x: 5, y: 0 }, 'x', { show: 'all' }, true,
+        );
+        expect(acquisition).toMatchObject({ coordinate: 5, valueCoordinates: [10], snapped: false });
     });
     it('keeps path fallback connections anchored to the selected segment midpoint', () => {
         const item = {
@@ -518,6 +672,85 @@ describe('Vega-Lite semantic interactions', () => {
         ]));
         expect(compiled.marks.filter((mark: any) => mark.type === 'symbol'))
             .toEqual(expect.arrayContaining([expect.objectContaining({ clip: true })]));
+    });
+
+    it('clips navigated marks to the plot, whether or not they are drawn in faceted groups', () => {
+        const groups = (spec: any): any[] => {
+            const found: any[] = [];
+            const walk = (group: any): void => {
+                for (const mark of group.marks ?? []) {
+                    found.push(mark);
+                    if (mark.type === 'group') walk(mark);
+                }
+            };
+            walk(spec);
+            return found;
+        };
+        const navigated = (input: any): any => {
+            const spec = assembleVegaLite(input) as any;
+            const plan = addVegaLiteInteractions(spec, [navigate({ axes: 'x' })]);
+            const compiled = compile(spec).spec as any;
+            injectVegaNavigationSignals(compiled, plan!.navigationChannels);
+            return compiled;
+        };
+        const lines = navigated({
+            chart_spec: { chartType: 'Line Chart', encodings: { x: { field: 'Age' }, y: { field: 'Hours' }, color: { field: 'Who' } } },
+            semantic_types: { Age: 'Number', Hours: 'Number', Who: 'Category' },
+            data: { values: [15, 30, 60].flatMap((Age) => ['Family', 'Friends'].map((Who, index) => ({ Age, Who, Hours: index + Age / 20 }))) },
+        });
+        expect(groups(lines).find((mark) => mark.type === 'line').clip).toBe(true);
+
+        const bars = navigated({
+            chart_spec: { chartType: 'Stacked Bar Chart', encodings: { x: { field: 'Month' }, y: { field: 'Price' }, color: { field: 'Food' } } },
+            semantic_types: { Month: 'YearMonth', Price: 'Number', Food: 'Category' },
+            theme_spec: { extends: 'datawrapper', geometry: { band: { cornerRadius: 2 } } },
+            data: { values: ['2020-01', '2020-02', '2020-03'].flatMap((Month) => ['A', 'B'].map((Food, index) => ({ Month, Food, Price: 1 + index }))) },
+        });
+        const stack = groups(bars).find((mark) => mark.type === 'group' && mark.from?.facet && mark.encode?.update?.xc);
+        expect(stack.clip).toBe(true);
+        expect(groups(stack).some((mark) => mark.clip === true)).toBe(false);
+    });
+
+    it('re-plans calendar ticks of a navigated time axis from the live domain', async () => {
+        const rows = Array.from({ length: 1500 }, (_, index) => ({
+            Week: new Date(Date.UTC(1990, 0, 1) + index * 7 * 864e5).toISOString().slice(0, 10),
+            Price: 1 + Math.sin(index / 50),
+        }));
+        const spec = assembleVegaLite({
+            chart_spec: { chartType: 'Line Chart', encodings: { x: { field: 'Week' }, y: { field: 'Price' } } },
+            semantic_types: { Week: 'Date', Price: 'Number' },
+            data: { values: rows },
+        }) as any;
+        const plan = addVegaLiteInteractions(spec, [navigate({ axes: 'x' })]);
+        const compiled = compile(spec).spec as any;
+        const axes = injectVegaNavigationSignals(compiled, plan!.navigationChannels, vegaLiteTemporalAxisPlans(spec));
+        const labelAxis = compiled.axes.find((axis: any) => axis.scale === 'x' && axis.encode?.labels);
+        expect(labelAxis.values).toEqual({ signal: '__flint_temporal_ticks_x.values' });
+        expect(labelAxis.encode.labels.update.text.signal).toContain('__flint_temporal_ticks_x.labels');
+        const xLabels = (view: View): string[] => {
+            const found: string[] = [];
+            const walk = (item: any): void => {
+                if (!item) return;
+                if (item.mark?.role === 'axis-label' && item.text && !(item.x < 0)) {
+                    found.push(item.text);
+                }
+                for (const child of item.items ?? []) walk(child);
+            };
+            walk((view.scenegraph() as any).root);
+            return found;
+        };
+        for (const expr of [undefined, expressionInterpreter]) {
+            const view = new View(parse(compiled, null, { ast: true } as any), { renderer: 'none', expr } as any);
+            await view.runAsync();
+            const full = xLabels(view);
+            expect(full).toEqual(['1990', '1995', '2000', '2005', '2010', '2015']);
+            view.signal(axes.x!.signal, [Date.UTC(2005, 0, 1), Date.UTC(2007, 0, 1)]);
+            await view.runAsync();
+            const window = xLabels(view);
+            expect(window.length).toBeGreaterThan(full.length);
+            expect(window).toContain('2005');
+            expect(window).toContain('July');
+        }
     });
 
     it('leaves reorder unwired when no reorder interaction is configured', () => {
@@ -654,6 +887,26 @@ describe('Vega-Lite semantic interactions', () => {
             .toEqual({ signal: '__flint_reorder_x_domain' });
         expect(compiled.scales.find((scale: any) => scale.name === 'y').domainRaw)
             .toEqual({ signal: '__flint_reorder_y_domain' });
+    });
+
+    it('keeps calendar month Heatmap columns fixed while allowing city row reordering', () => {
+        const spec = assembleVegaLite({
+            chart_spec: {
+                chartType: 'Heatmap',
+                encodings: { x: 'Month', y: 'City', color: 'Temperature' },
+            },
+            semantic_types: { Month: 'Month', City: 'Category', Temperature: 'Temperature' },
+            data: { values: [
+                { Month: 'Jan', City: 'Seattle', Temperature: 5 },
+                { Month: 'Feb', City: 'Seattle', Temperature: 6 },
+                { Month: 'Jan', City: 'Cairo', Temperature: 14 },
+                { Month: 'Feb', City: 'Cairo', Temperature: 15 },
+            ] },
+        }) as any;
+        const plan = addVegaLiteInteractions(spec, [dragReorder()])!;
+        expect(plan.reorderAxes).toEqual([
+            { axis: 'y', field: 'City', scale: '', signal: '' },
+        ]);
     });
 
     it.each(['Boxplot', 'Line Chart'])('declares authored nominal axes as reorderable for %s', (chartType) => {
@@ -888,6 +1141,43 @@ describe('Vega-Lite semantic interactions', () => {
         view.finalize();
     });
 
+    it('holds the domain at the zoom limit instead of drifting toward the cursor', async () => {
+        const spec = assembleVegaLite({
+            chart_spec: {
+                chartType: 'Scatter Plot',
+                encodings: { x: { field: 'x' }, y: { field: 'y' } },
+            },
+            semantic_types: { x: 'Number', y: 'Number' },
+            data: { values: [{ x: 0, y: 0 }, { x: 100, y: 100 }] },
+        }) as any;
+        const plan = addVegaLiteInteractions(spec, [navigate()])!;
+        const compiled = compile(spec).spec as any;
+        const axes = injectVegaNavigationSignals(compiled, plan.navigationChannels);
+        const view = new View(parse(compiled), { renderer: 'none' });
+        await view.runAsync();
+        const initial = view.scale('x').domain().map(Number);
+        const controller = createVegaNavigationController(view, axes);
+        const guard = { minVisibleFraction: 0.1, maxVisibleFraction: 1, overscrollFraction: 0 };
+        const zoomIn = async () => {
+            const update = controller.resolve({
+                type: 'navigation', phase: 'commit', operation: 'zoom', axes: 'x',
+                factor: 1.25, anchor: { x: 0.2, y: 0.5 },
+            }, guard);
+            controller.apply(update!);
+            await view.runAsync();
+            return view.scale('x').domain().map(Number);
+        };
+
+        let domain = initial;
+        for (let step = 0; step < 20; step += 1) domain = await zoomIn();
+        expect(domain[1] - domain[0]).toBeCloseTo((initial[1] - initial[0]) * guard.minVisibleFraction);
+        for (let step = 0; step < 20; step += 1) {
+            const next = await zoomIn();
+            next.forEach((value, index) => expect(value).toBeCloseTo(domain[index], 6));
+        }
+        view.finalize();
+    });
+
     it('tweens a Vega scale domain to its target and keeps the tween through a render', async () => {
         const spec = assembleVegaLite({
             chart_spec: {
@@ -1037,6 +1327,154 @@ describe('Vega-Lite semantic interactions', () => {
         expect(segments).not.toContainEqual({ x1: 20, y1: 10, x2: 20, y2: 20 });
         expect(segments).toContainEqual({ x1: 10, y1: 10, x2: 10, y2: 20 });
         expect(segments).toContainEqual({ x1: 10, y1: 10, x2: 20, y2: 10 });
+    });
+
+    it('reads the clip of each scene item from its mark and its clipping groups', () => {
+        const point = (x: number, y: number) => ({ mark: { marktype: 'symbol' }, datum: { [INTERACTION_KEY]: `${x}` }, x, y, bounds: { x1: x - 3, x2: x + 3, y1: y - 3, y2: y + 3 } });
+        const clippedMark = { marktype: 'symbol', clip: true, items: [point(5, 5), point(150, 5)] } as any;
+        const unclippedMark = { marktype: 'symbol', items: [point(150, 50)] } as any;
+        const plot = { mark: { marktype: 'group' }, x: 10, y: 20, width: 100, height: 80, items: [clippedMark, unclippedMark] } as any;
+        clippedMark.group = plot;
+        unclippedMark.group = plot;
+        const cell = { mark: { marktype: 'group' }, x: 0, y: 0, width: 60, height: 80, clip: true, items: [] as any[] } as any;
+        const cellMark = { marktype: 'symbol', items: [point(70, 5)], group: cell } as any;
+        cell.items.push(cellMark);
+        const root = { marktype: 'group', items: [{ mark: { marktype: 'group' }, x: 0, y: 0, items: [{ marktype: 'group', items: [plot, cell] }] }] };
+        const items = sceneItems({ scenegraph: () => ({ root }) });
+
+        const byX = (x: number) => items.find((item) => item.x === x)!;
+        expect(byX(15).interactionClip).toEqual({ x1: 10, y1: 20, x2: 110, y2: 100 });
+        expect(itemVisibility(byX(15))).toBe('full');
+        expect(itemVisibility(byX(160))).toBe('none');
+        expect(byX(160).interactionClip).toEqual({ x1: 10, y1: 20, x2: 110, y2: 100 });
+        expect(items.find((item) => item.y === 70)!.interactionClip).toBeUndefined();
+        expect(byX(70).interactionClip).toEqual({ x1: 0, y1: 0, x2: 60, y2: 80 });
+        expect(itemVisibility(byX(70))).toBe('none');
+    });
+
+    it('clips each line of a zoomed multi-series chart to the plot', async () => {
+        const spec = assembleVegaLite({
+            chart_spec: { chartType: 'Line Chart', encodings: { x: { field: 'x' }, y: { field: 'y' }, color: { field: 's' } }, baseSize: { width: 200, height: 100 } },
+            semantic_types: { x: 'Number', y: 'Number', s: 'Category' },
+            data: { values: [0, 1, 2, 3].flatMap((x) => ['a', 'b'].map((s) => ({ x, y: x * 2, s }))) },
+        }) as any;
+        const { plan, compiled } = instrument(spec, [navigate({ axes: 'x' }), clickMark()]);
+        injectVegaNavigationSignals(compiled, plan!.navigationChannels);
+        const view = new View(parse(compiled), { renderer: 'none' });
+        await view.runAsync();
+        const lines = sceneItems(view).filter((item) => item.mark.marktype === 'line');
+
+        expect(new Set(lines.map((line) => line.datum.s))).toEqual(new Set(['a', 'b']));
+        for (const line of lines) {
+            const clip = line.interactionClip;
+            expect(clip).toBeDefined();
+            expect(clip.x2 - clip.x1).toBe(view.width());
+            expect(clip.y2 - clip.y1).toBe(view.height());
+        }
+        view.finalize();
+    });
+
+    it('keeps a point on the clip edge in view and a bar beside the clip out of it', () => {
+        const clip = { x1: 0, y1: 0, x2: 100, y2: 50 };
+        expect(pointInClip({ x: 100, y: 25 }, clip)).toBe(true);
+        expect(pointInClip({ x: 100.3, y: 25 }, clip)).toBe(true);
+        expect(pointInClip({ x: 101, y: 25 }, clip)).toBe(false);
+        expect(pointInClip({ x: 500, y: 500 }, undefined)).toBe(true);
+
+        const edgePoint = { mark: { marktype: 'symbol' }, x: 0, y: 10, bounds: { x1: -4, x2: 4, y1: 6, y2: 14 }, interactionClip: clip };
+        expect(itemVisibility(edgePoint)).toBe('full');
+        const bar = (x1: number, x2: number) => ({ mark: { marktype: 'rect' }, bounds: { x1, x2, y1: 10, y2: 50 }, interactionClip: clip });
+        expect(itemVisibility(bar(100, 120))).toBe('none');
+        expect(itemVisibility(bar(90, 120))).toBe('partial');
+        expect(itemVisibility(bar(20, 40))).toBe('full');
+        expect(clippedBounds(bar(90, 120).bounds, clip)).toEqual({ x1: 90, x2: 100.5, y1: 10, y2: 50 });
+        const rule = { mark: { marktype: 'rule' }, bounds: { x1: 50, x2: 50, y1: 0, y2: 50 }, interactionClip: clip };
+        expect(itemVisibility(rule)).toBe('full');
+        const segment = (from: { x: number; y: number }, to: { x: number; y: number }) => ({
+            mark: { marktype: 'line' },
+            bounds: { x1: Math.min(from.x, to.x), x2: Math.max(from.x, to.x), y1: Math.min(from.y, to.y), y2: Math.max(from.y, to.y) },
+            interactionGeometry: { kind: 'segment', points: [from, to], offset: { x: 0, y: 0 } },
+            interactionClip: clip,
+        });
+        expect(itemVisibility(segment({ x: 80, y: 20 }, { x: 140, y: 20 }))).toBe('partial');
+        expect(itemVisibility(segment({ x: 120, y: 20 }, { x: 140, y: 20 }))).toBe('none');
+    });
+
+    it('never picks a mark a navigated viewport has moved off the plot', async () => {
+        const spec = assembleVegaLite({
+            chart_spec: { chartType: 'Scatter Plot', encodings: { x: { field: 'Year' }, y: { field: 'Share' } }, baseSize: { width: 400, height: 300 } },
+            semantic_types: { Year: 'Number', Share: 'Number' },
+            data: { values: [2000, 2005, 2010, 2015, 2020].map((Year) => ({ Year, Share: 10 })) },
+        }) as any;
+        const { plan, compiled } = instrument(spec, [navigate({ axes: 'xy' }), clickMark()]);
+        const axes = injectVegaNavigationSignals(compiled, plan!.navigationChannels);
+        const view = new View(parse(compiled), { renderer: 'none' });
+        await view.runAsync();
+        // 2005 sits a few pixels left of the plot, 2010 well inside it.
+        view.signal(axes.x!.signal, [2005.2, 2015]);
+        await view.runAsync();
+        const items = sceneItems(view).filter((item) => item.mark.marktype === 'symbol');
+        const year = (item: any) => item?.datum?.Year;
+        const offPlot = items.find((item) => year(item) === 2005)!;
+        expect(offPlot.x).toBeLessThan(0);
+        expect(isPickable(offPlot)).toBe(false);
+        const edge = { x: 1, y: offPlot.y };
+        const rect = { x1: -30, y1: offPlot.y - 30, x2: 30, y2: offPlot.y + 30 };
+        const picks: Record<string, unknown[]> = {
+            nearest: [year(nearestSceneItem(view, edge, 40))],
+            nearestInteractive: [year(nearestInteractiveSceneItem(view, edge, 40))],
+            brush: regionHits(view, { x: rect.x1, y: rect.y1 }, { x: rect.x2, y: rect.y2 }).map((hit) => hit.datum.Year),
+            lasso: polygonHits(view, [{ x: rect.x1, y: rect.y1 }, { x: rect.x2, y: rect.y1 }, { x: rect.x2, y: rect.y2 }, { x: rect.x1, y: rect.y2 }]).map((hit) => hit.datum.Year),
+            inspect: tolerantInspectHits(items, edge, 'xy', {}, { x: 40, y: 40 }).map((hit) => hit.datum.Year),
+            index: indexInspectAcquisition(items, edge, 'x', { show: 'all' }, true, undefined, 40).hits.map((hit) => hit.datum.Year),
+            arrowLeft: [year(nextItemInDirection(items, { x: 60, y: offPlot.y }, 'left'))],
+            keyboard: keyboardTargetItems(items).map(year),
+            reorder: [nearestReorderHit(items, 'x', 'Year', -5)?.datum.Year],
+        };
+        for (const [name, years] of Object.entries(picks)) {
+            expect({ name, years }).toEqual({ name, years: expect.not.arrayContaining([2005]) });
+        }
+        expect(picks.keyboard).toEqual([2010, 2015]);
+    });
+
+    it('keeps an index readout at an x in view when the y range cuts the value off', async () => {
+        const spec = assembleVegaLite({
+            chart_spec: { chartType: 'Scatter Plot', encodings: { x: { field: 'Year' }, y: { field: 'Share' } }, baseSize: { width: 400, height: 300 } },
+            semantic_types: { Year: 'Number', Share: 'Number' },
+            data: { values: [{ Year: 2010, Share: 90 }, { Year: 2012, Share: 20 }] },
+        }) as any;
+        const { plan, compiled } = instrument(spec, [navigate({ axes: 'xy' }), clickMark()]);
+        const axes = injectVegaNavigationSignals(compiled, plan!.navigationChannels);
+        const view = new View(parse(compiled), { renderer: 'none' });
+        await view.runAsync();
+        view.signal(axes.y!.signal, [0, 50]);
+        await view.runAsync();
+        const items = sceneItems(view).filter((item) => item.mark.marktype === 'symbol');
+        const high = items.find((item) => item.datum.Year === 2010)!;
+        expect(isPickable(high)).toBe(false);
+        expect(isPickable(high, 'x')).toBe(true);
+        const readout = indexInspectAcquisition(items, { x: high.x, y: 100 }, 'x', { show: 'all' }, true);
+        expect(readout.hits.map((hit) => hit.datum.Year)).toEqual([2010]);
+    });
+
+    it('marks the points a navigated viewport leaves behind as out of view', async () => {
+        const spec = assembleVegaLite({
+            chart_spec: { chartType: 'Scatter Plot', encodings: { x: { field: 'Year' }, y: { field: 'Share' } } },
+            semantic_types: { Year: 'Number', Share: 'Number' },
+            data: { values: [2000, 2005, 2010, 2015, 2020].map((Year) => ({ Year, Share: Year - 1990 })) },
+        }) as any;
+        const { plan, compiled } = instrument(spec, [navigate({ axes: 'x' }), clickMark()]);
+        const axes = injectVegaNavigationSignals(compiled, plan!.navigationChannels);
+        const view = new View(parse(compiled), { renderer: 'none' });
+        await view.runAsync();
+        const visibility = () => Object.fromEntries(sceneItems(view)
+            .filter((item) => item.mark.marktype === 'symbol')
+            .map((item) => [item.datum.Year, itemVisibility(item)]));
+        expect(Object.values(visibility()).every((value) => value === 'full')).toBe(true);
+
+        view.signal(axes.x!.signal, [2005, 2015]);
+        await view.runAsync();
+        expect(visibility()).toEqual({ 2000: 'none', 2005: 'full', 2010: 'full', 2015: 'full', 2020: 'none' });
     });
 
     it('keeps themed line vertices filled when expanding them for interaction', () => {
@@ -1571,7 +2009,9 @@ describe('Vega-Lite semantic interactions', () => {
     });
 
     it('compiles template hover paint into native mark encodings', async () => {
-        for (const [mark, renderMark, width] of [['rect', 'rect', 1.5], ['circle', 'symbol', 2]] as const) {
+        // A mark with an outline of its own is outlined at that width on hover — recoloured, never
+        // wider — so the hover never reaches past the mark's bounds; a bar has none, and takes the paint's.
+        for (const [mark, renderMark, width, drawn] of [['rect', 'rect', 1.5, 1.5], ['circle', 'symbol', 2, 1.5]] as const) {
             const spec: Record<string, any> = {
                 data: { values: [{ X: 'A', Y: 2 }] },
                 mark,
@@ -1594,12 +2034,14 @@ describe('Vega-Lite semantic interactions', () => {
             await view.runAsync();
             const item = sceneItems(view).find((candidate) => candidate.datum[INTERACTION_KEY]);
             const key = item?.datum[INTERACTION_KEY];
+            const idleBounds = item && { x1: item.bounds.x1, x2: item.bounds.x2 };
             view.change(HOVER_STORE, changeset().insert([{ key }]));
             await view.runAsync();
             const hovered = sceneItems(view).find((candidate) => candidate.datum[INTERACTION_KEY] === key);
 
             expect(hovered?.stroke).toBe('#59636d');
-            expect(hovered?.strokeWidth).toBe(width);
+            expect(hovered?.strokeWidth).toBe(drawn);
+            if (mark === 'circle') expect({ x1: hovered?.bounds.x1, x2: hovered?.bounds.x2 }).toEqual(idleBounds);
         }
     });
 
@@ -1862,8 +2304,14 @@ describe('Vega-Lite semantic interactions', () => {
             expect(styled.length).toBeGreaterThan(0);
             for (const mark of styled) {
                 expect(JSON.stringify(mark.encode.update.opacity)).toContain(HOVER_STORE);
-                expect(JSON.stringify(mark.encode.update.stroke)).toContain(MUTED_HOVER_STROKE);
                 expect(JSON.stringify(mark.encode.update.strokeWidth)).toContain(HOVER_STORE);
+                // An outlier is a hollow point: its outline keeps its colour and the hover fills it.
+                if (markType === 'symbol') {
+                    expect(JSON.stringify(mark.encode.update.stroke)).not.toContain(MUTED_HOVER_STROKE);
+                    expect(JSON.stringify(mark.encode.update.fill)).toContain(HOVER_STORE);
+                } else {
+                    expect(JSON.stringify(mark.encode.update.stroke)).toContain(MUTED_HOVER_STROKE);
+                }
             }
         }
     });
@@ -2142,6 +2590,44 @@ describe('Vega-Lite semantic interactions', () => {
             { left: 20, top: 20, width: 320, height: 160 },
             { width: 400, height: 200 },
         )).toEqual({ left: 50, top: 25, width: 250, height: 125 });
+    });
+
+    it('picks canvas items in renderer pixels when the canvas is CSS-scaled', () => {
+        const picks: number[][] = [];
+        const canvas = {
+            getBoundingClientRect: () => ({ left: 100, top: 50, width: 200, height: 100 }),
+            offsetWidth: 400,
+            offsetHeight: 200,
+            clientLeft: 0,
+            clientTop: 0,
+        };
+        const handler: any = {
+            _origin: [10, 5],
+            _scene: {},
+            canvas: () => canvas,
+            context: () => ({}),
+            pick: (_scene: unknown, x: number, y: number, gx: number, gy: number) => picks.push([x, y, gx, gy]),
+        };
+        scaleAwareCanvasPicking(handler);
+        handler.pickEvent({ clientX: 200, clientY: 100 });
+        expect(picks).toEqual([[200, 100, 190, 95]]);
+
+        const svgHandler: any = { svg: () => ({}), pickEvent: () => 'unchanged' };
+        scaleAwareCanvasPicking(svgHandler);
+        expect(svgHandler.pickEvent()).toBe('unchanged');
+    });
+
+    it('places the plot where the renderer draws it, padding included', () => {
+        const view = { origin: () => [49, 48], padding: () => ({ top: 14, left: 14, right: 14, bottom: 14 }) };
+        expect(vegaRendererOrigin(view)).toEqual({ x: 63, y: 62 });
+    });
+
+    it('measures the chart renderer, not an overlay layer appended before it', () => {
+        const canvas = {};
+        const container: any = {
+            querySelector: (selector: string) => selector === 'canvas.marks, svg.marks' ? canvas : { overlay: true },
+        };
+        expect(rendererElement(container)).toBe(canvas);
     });
 
     it('translates concat marks by ancestor group offsets', () => {
@@ -3976,10 +4462,31 @@ describe('Vega-Lite semantic interactions', () => {
 
         const femaleFrame = frameFor(female);
         const maleFrame = frameFor(male);
+        expect(femaleFrame).toBeDefined();
+        expect(maleFrame).toBeDefined();
         expect(femaleFrame).not.toEqual(fallback);
         expect(maleFrame).not.toEqual(fallback);
-        expect(femaleFrame.y).not.toBe(maleFrame.y);
-        expect(femaleFrame.height).toBe(maleFrame.height);
+        expect(femaleFrame!.y).not.toBe(maleFrame!.y);
+        expect(femaleFrame!.height).toBe(maleFrame!.height);
+        const broadFallback = { x: -10_000, y: -10_000, width: 20_000, height: 20_000 };
+        const topFrame = femaleFrame!.y < maleFrame!.y ? femaleFrame! : maleFrame!;
+        const bottomFrame = topFrame === femaleFrame ? maleFrame! : femaleFrame!;
+        expect(facetPlotFrameAt(view, {
+            x: topFrame.x + topFrame.width / 2,
+            y: (topFrame.y + topFrame.height + bottomFrame.y) / 2,
+        }, broadFallback)).toBeUndefined();
+        expect(facetPlotFrameAt(view, {
+            x: Math.max(femaleFrame!.x + femaleFrame!.width, maleFrame!.x + maleFrame!.width) + 20,
+            y: femaleFrame!.y + femaleFrame!.height / 2,
+        }, broadFallback)).toBeUndefined();
+    });
+
+    it('only resolves the fallback plot frame for points inside a unit chart', () => {
+        const view = { scenegraph: () => ({ root: { items: [] } }) };
+        const frame = { x: 0, y: 0, width: 200, height: 100 };
+        expect(facetPlotFrameAt(view, { x: 100, y: 50 }, frame)).toEqual(frame);
+        expect(facetPlotFrameAt(view, { x: 210, y: 50 }, frame)).toBeUndefined();
+        expect(facetPlotFrameAt(view, { x: 100, y: -10 }, frame)).toBeUndefined();
     });
 
     it('does not instrument marks declared as decorative', () => {
@@ -4136,6 +4643,28 @@ describe('set-style visibility', () => {
         view.finalize();
     });
 
+    it('keeps a themed axis label colour outside the hover', async () => {
+        const compiled = compile({
+            data: { values: [{ Column: 'A', Value: 1 }] },
+            mark: 'bar',
+            encoding: {
+                x: { field: 'Column', type: 'nominal' },
+                y: { field: 'Value', type: 'quantitative' },
+            },
+            config: { axisX: { labelColor: '#c8c6c4' } },
+        }).spec as Record<string, any>;
+        collectVegaAxisTargets(compiled, {
+            x: { field: 'Column', type: 'nominal' },
+            y: { field: 'Value', type: 'quantitative' },
+        }, [], '#123456');
+        injectVegaInteractionStore(compiled);
+        const view = new View(parse(compiled), { renderer: 'none' });
+        await view.runAsync();
+        const label = allSceneItems(view).find((item) => item.mark?.role === 'axis-label' && item.datum?.value === 'A');
+        expect(label?.fill).toBe('#c8c6c4');
+        view.finalize();
+    });
+
     it('turns an axis target into a style update without accepting mark targets', () => {
         const interaction = axisHighlight({ axis: 'x', dimOpacity: 0.2 });
         const context = { chartType: 'Bar Chart', selected: [] };
@@ -4236,6 +4765,35 @@ describe('set-style visibility', () => {
         expect(spec.layer).toBeUndefined();
         expect(plan?.semanticStores).toBe(false);
         expect(plan?.navigationChannels).toEqual(['x', 'y']);
+    });
+
+    it('keeps a faceted line with points faceted when its points split into a layer', () => {
+        const spec: Record<string, any> = {
+            _interactionSemantics: {
+                capabilities: ALL_CAPABILITIES,
+                fields: ['Month', 'Users', 'Platform'],
+                seriesField: 'Platform',
+                legendFields: { color: 'Platform' },
+                selectableMarks: ['line', 'point'],
+            },
+            data: { values: ['N', 'E', 'S', 'W'].flatMap((Region) => [1, 2].map((Month) => ({ Region, Month, Users: Month, Platform: 'PC' }))) },
+            mark: { type: 'line', point: { filled: true } },
+            encoding: {
+                x: { field: 'Month', type: 'quantitative' },
+                y: { field: 'Users', type: 'quantitative' },
+                color: { field: 'Platform', type: 'nominal' },
+                facet: { field: 'Region', type: 'nominal', columns: 2 },
+            },
+        };
+
+        addVegaLiteInteractions(spec, [clickHighlight()]);
+
+        expect(spec.facet).toEqual({ field: 'Region', type: 'nominal' });
+        expect(spec.columns).toBe(2);
+        expect(spec.spec.layer.map((layer: any) => layer.mark.type)).toEqual(['line', 'point']);
+        expect(spec.spec.encoding.facet).toBeUndefined();
+        const panels = (compile(spec as any).spec.marks ?? []).find((mark: any) => mark.from?.facet);
+        expect(panels?.from.facet.groupby).toEqual(['Region']);
     });
 
     it('leaves the legend domain alone when nothing can hide a series', () => {

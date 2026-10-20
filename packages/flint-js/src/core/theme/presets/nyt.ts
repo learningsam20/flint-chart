@@ -176,8 +176,10 @@ export const nyt: ThemePreset = {
                 "seriesEnd",
                 "top"
             ],
-            "title": "omit",
-            "suppressWhenValuesPrinted": false
+            "title": "whenAmbiguous",
+            "suppressWhenValuesPrinted": false,
+            "arrangement": "row",
+            "titlePosition": "inline"
         },
         "dataLabels": {
             "show": "always",

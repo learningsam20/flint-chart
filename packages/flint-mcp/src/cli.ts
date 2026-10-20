@@ -44,14 +44,14 @@ Options:
 
 Tools:
   create_chart_view, render_chart, compile_chart, validate_chart,
-  list_chart_types, list_themes
+  list_chart_types, list_interaction_presets, list_themes, get_flint_skill
 
 Resources:
-  flint://agent-skill, flint://theme-skill, flint://chart-types,
-  ui://flint-chart/chart-view.html
+  flint://agent-skill, flint://theme-skill, flint://interaction-skill,
+  flint://chart-types, ui://flint-chart/chart-view.html
 
 Prompts:
-  author_flint_chart, author_flint_theme
+  author_flint_chart, author_flint_theme, author_flint_interaction
 
 Example MCP client config:
   { "command": "npx", "args": ["-y", "flint-chart-mcp"] }

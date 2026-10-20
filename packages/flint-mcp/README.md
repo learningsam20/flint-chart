@@ -25,10 +25,12 @@ renders **locally**.
 |---|---|---|
 | `render_chart` | spec + `backend` + `format` (`png`/`svg`) + `scale?` | inline PNG image or SVG text |
 | `compile_chart` | spec + `backend` | backend-native spec JSON + warnings |
-| `validate_chart` | spec + `backend` | validity, warnings/errors, computed size |
+| `validate_chart` | spec + `backend` + optional `updates` | validity, warnings/errors, computed size; a malformed update layer is an error |
 | `list_chart_types` | `backend?` | chart types, encoding channels, and supported interaction presets per backend |
+| `list_interaction_presets` | `chartType?`, `type?` | interaction presets: what each does, what it needs from the chart, reset gestures, and every option it accepts |
 | `list_themes` | optional preset `id` | shipped visual themes, plus guidance for a selected theme |
-| `create_chart_view` | spec | interactive chart **UI** (MCP App): live SVG preview + customization panel |
+| `get_flint_skill` | `skill` (`chart`/`theme`/`interaction`) + `section?` | a bundled skill as markdown, or one `## ` section of it |
+| `create_chart_view` | spec + optional `updates` | live chart **UI** (MCP App): SVG preview + editing panel, opened with the given ChartUpdate layers applied |
 
 ## Visual themes
 
@@ -55,10 +57,10 @@ See the full
 [ThemeSpec guide](https://microsoft.github.io/flint-chart/#/documentation/theme-spec)
 for supported fields and merge behavior.
 
-## MCP App: interactive chart view
+## MCP App: live chart view
 
 In hosts that support MCP App UIs (e.g. Claude Desktop), `create_chart_view`
-opens an interactive view that renders the spec live (Vega-Lite → SVG) and shows
+opens a view that renders the spec live (Vega-Lite → SVG) and shows
 a customization panel built from Flint's own option model — chart type, channel
 bindings, chart properties (corner radius, stack mode, donut hole, …), and
 encoding actions (sort), plus Flint's visual theme presets. Rendering and edits
@@ -72,18 +74,27 @@ self-contained HTML bundle served as the
 |---|---|---|
 | `flint://agent-skill` | resource | Bundled Flint authoring instructions for generating valid `ChartAssemblyInput` specs. |
 | `flint://theme-skill` | resource | Bundled instructions for translating a visual identity into a valid reusable `ThemeSpec`. |
+| `flint://interaction-skill` | resource | Bundled instructions for adding behaviour to a chart: a gesture or an intent mapped to presets, as one valid `interaction_spec`. |
 | `flint://chart-types` | resource | Browsable chart-type catalog and encoding channels across backends. |
 | `ui://flint-chart/chart-view.html` | resource | Bundled UI for the `create_chart_view` MCP App (live chart + customization panel). |
 | `author_flint_chart` | prompt | Embeds the bundled skill so prompt-aware clients can load the chart-spec rules before tool calls. |
 | `author_flint_theme` | prompt | Embeds the theme-author skill for creating, translating, refining, or reviewing a `ThemeSpec`. |
+| `author_flint_interaction` | prompt | Embeds the interaction-author skill: presets as an `interaction_spec`, the `ChartUpdate` for a mounted chart, reading the chart state, linking charts, and bespoke interactions. |
 
-For best results, have your MCP client include `flint://agent-skill` or run the
-`author_flint_chart` prompt before asking the agent to call `create_chart_view`,
-`render_chart`, `compile_chart`, or `validate_chart`.
+The server instructions tell the agent to call `get_flint_skill` before it
+writes a spec, so the skills reach the agent in hosts that do not surface MCP
+resources or prompts to the model. You can also include `flint://agent-skill` or
+run the `author_flint_chart` prompt before asking the agent to call
+`create_chart_view`, `render_chart`, `compile_chart`, or `validate_chart`.
 
 When creating or substantially customizing a visual theme, load
 `flint://theme-skill` or run `author_flint_theme`. Use `list_themes` separately
 to discover built-in presets and retrieve preset-specific guidance.
+
+When the user asks for behaviour on a chart, names an intent such as explore or
+compare, or adds behaviour to a chart that already exists, load
+`flint://interaction-skill` or run `author_flint_interaction`. Use
+`list_chart_types` to confirm the presets a chart type supports.
 
 Data can be provided in two ways:
 

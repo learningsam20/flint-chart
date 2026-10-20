@@ -11,8 +11,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Target release: **1.0.0** for `flint-chart`, `flint-chart-mcp`, and the Copilot
+Canvas plugin. This release has not been published.
+Planned work is tracked in the [1.0 working plan](.github/release-notes/1.0.0-todo.md);
+the entries below describe implemented changes, not the remaining checklist.
+
 ### Added
 
+- `validateChart(input, backend, { updates })` checks ChartUpdates against the
+  chart in the same pass: `result.updates` gives each op as applied or why not,
+  each op that will not apply is an `update_not_applied` warning, and a
+  malformed list is an `invalid_updates` error. It replaces the shape-only
+  `validateChartUpdates`. The MCP `validate_chart` and `create_chart_view`
+  return the same report the chart view later sends as its context: the chart,
+  its interactions, and one ✓/✗ line per update op. `create_chart_view` hands
+  the view its payload in `_meta.flint` instead of `structuredContent`, so the
+  model reads the report rather than the data rows.
+
+- `filter-controls` (`filterControls`), a filter-only interaction preset. It
+  draws one row of muted controls per field under the chart (a segmented bar
+  to pick one of a few values, pills to pick several, a searchable dropdown for
+  many, a slider to pick one year or other ordered value, a range slider, or a
+  switch), and filters the rows (or mutes them with
+  `mode: "highlight"`); each filter re-lays the chart out for the rows left.
+  Values read as the chart writes them, from the field's semantic type
+  (`Aug 2015`, `$1.20`, `2007`).
+  `placement` is `auto` or `bottom` (under the chart) or `top`; under 280px
+  wide each label sits above its control. With `render: false` the host draws its own
+  controls and drives the preset through `dispatch`. The active filters appear
+  as `ChartState.filters`. Without `fields`, the preset skips fields that
+  `legend-toggle`, `navigate`, or `brush-zoom` already filter. A filtered chart
+  keeps its colors per category.
+- A reproducible Copilot Canvas plugin build (`npm run build:copilot-plugin`)
+  bundles the current chart UI and authoring skill, aligns the plugin version
+  with the npm packages, and pins the MCP server to that release.
+- `flint-interaction-author`, a third agent skill beside the chart and theme
+  skills. It maps a named gesture or an intent (explore, compare, analyse) to
+  interaction presets and returns one valid `interaction_spec`, at authoring
+  time or after the chart exists. The MCP server serves it as
+  `flint://interaction-skill` and the prompt `author_flint_interaction`. The
+  chart-author skill keeps a short `interaction_spec` section and points to it.
+  `npm run sync:skills` copies the three skills into the MCP assets.
 - Viewport changes a gesture commits animate by default. A `navigate` or
   `brush-zoom` reset flies home, and a brush zoom tweens into the brushed
   region, over 400 ms on every Vega-Lite chart, not only on projected maps.
@@ -55,9 +94,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`_facet`). `validateChart` accepts `highcharts`, and the MCP
   server and site editor render it. Guide:
   `docs/reference-highcharts.md`.
+- `<FlintChart>` from the new `flint-chart/react` subpath (React is an
+  optional peer dependency). `spec` takes the `ChartAssemblyInput` with its
+  `interaction_spec`; `interactions` takes preset factories, as an array added
+  to the spec's interactions or a function `(fromSpec) => definitions` that
+  returns the full list. A chart with no interactions renders static and
+  mounts no interaction runtime; pass `updates` (even `[]`) to drive it from
+  the host. The `updates` prop is diffed by id, and a dropped id is cleared only if the host
+  wrote it last. `width`, `height`, and `fit` (`shrink`, `contain`, `none`)
+  set the box, which scales the chart; the layout size stays in the spec. A
+  ref exposes `applyUpdate`, `clearUpdate`, `dispatch`, `getState`, and
+  `refresh`; `fallback` shows until the chart mounts.
+- `mountChart()`, the new name of `buildInteractiveChart()`, which remains as
+  an alias. Its `semanticUpdates` option (default `true`) keeps host updates
+  on a chart without interactions; `false` skips the interaction runtime. `surface.onInteraction()` hears the raw gesture records.
+- `renderSvg(input, { backend })` from the new `flint-chart/render` subpath
+  returns a static SVG string for Vega-Lite or ECharts without a DOM.
+- `selectionUpdate()` and `viewportUpdate()` build the updates a selection or
+  navigation preset writes, for hosts that set the same state.
+- `ChartState.annotations` lists reader-made annotations, so a host can
+  persist them.
 
 ### Changed
 
+- `onChange` fires only when the chart's state changes, not after every
+  render. A `ChartChange` now carries `source` (`reader` for a gesture, `host`
+  for `applyUpdate`, `clearUpdate`, or `setUpdates`), `changed` (the facets
+  that moved), and `previous`. A gesture that changes nothing, such as an
+  inspected index, reaches the host only through `flint-interaction`.
+- Interactive Vega-Lite mounts no longer turn tooltips on. Tooltips follow the
+  spec's `options.addTooltips` (default `false`), as in static rendering.
+- A code definition with the id of an `interaction_spec` entry now replaces
+  that entry with an `interaction_overridden` info warning. Before, the mount
+  threw.
+- A non-Vega-Lite backend asked for interactions now renders the chart static
+  with an `interactions_ignored` warning. Before, the mount threw when code
+  passed interactions.
 - `CanvasInteractionDef.affordances` is now a required map from the kind of
   hit (`mark`, `legend-item`, `axis-label`, `plot`) to its cursor and hover,
   and it is the only dispatch gate: the runtime sends a hit to an interaction
