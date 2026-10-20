@@ -104,6 +104,7 @@ function buildPieOption(
             pie: {
                 allowPointSelect: true,
                 cursor: 'pointer',
+                showInLegend: !!colorField,
                 ...(isDoughnut ? { innerSize: `${innerRadius}%` } : {}),
                 dataLabels: {
                     enabled: true,

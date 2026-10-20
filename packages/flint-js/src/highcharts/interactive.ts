@@ -67,6 +67,13 @@ export function createHighchartsInteractiveRenderer(rendererOptions?: Highcharts
             let latestStarts: ViewportState = {};
             let lastOptionJson = '';
 
+            const highlightDef = rendererOptions?.interactions?.find(
+                (it: any) => it.id === 'click-highlight' || it.eventSource?.type === 'click' || it.affordances?.selection,
+            );
+            const dimOpacity = typeof highlightDef?.options?.dimOpacity === 'number'
+                ? highlightDef.options.dimOpacity
+                : DIM_OPACITY;
+
             const applyVisualStates = (): void => {
                 for (const chart of currentCharts) {
                     chart.series.forEach((series, seriesIndex) => {
@@ -74,7 +81,7 @@ export function createHighchartsInteractiveRenderer(rendererOptions?: Highcharts
                             graphic?: { attr: (attributes: Record<string, unknown>) => void };
                         }>;
                         const seriesOpacity = activeSelection
-                            ? (seriesIndex === activeSelection.series ? 1 : DIM_OPACITY)
+                            ? (seriesIndex === activeSelection.series ? 1 : dimOpacity)
                             : 1;
                         points.forEach((point) => {
                             if (point.graphic && typeof point.graphic.attr === 'function') {
@@ -115,13 +122,20 @@ export function createHighchartsInteractiveRenderer(rendererOptions?: Highcharts
 
                 const decorateOption = (panelOpt: any) => {
                     const plotOptions = panelOpt?.plotOptions ?? {};
-                    const isZoomable = rendererOptions?.interactions?.some((it: any) => it.eventSource?.type === 'navigation');
+                    const navInteraction = rendererOptions?.interactions?.find(
+                        (it: any) => it.eventSource?.type === 'navigation' || it.id === 'navigate',
+                    );
+                    const navAxes = navInteraction?.options?.axes ?? 'x';
+                    const allowZoom = navInteraction?.options?.zoom !== false;
+                    const zoomType = (navInteraction && allowZoom)
+                        ? (navAxes === 'xy' ? 'xy' : navAxes === 'y' ? 'y' : 'x')
+                        : undefined;
                     return {
                         ...panelOpt,
                         chart: {
                             ...(panelOpt?.chart ?? {}),
                             animation: false,
-                            ...(isZoomable ? { zoomType: 'x' } : {}),
+                            ...(zoomType ? { zoomType, zooming: { type: zoomType } } : {}),
                         },
                         plotOptions: {
                             ...plotOptions,
@@ -317,12 +331,26 @@ interface ViewportChange {
     value: { x?: { min: number; max: number }; y?: { min: number; max: number } };
 }
 
+function parseAxisInterval(val: unknown): { min: number; max: number } | undefined {
+    if (!val) return undefined;
+    if (Array.isArray(val) && val.length >= 2) {
+        return { min: Number(val[0]), max: Number(val[1]) };
+    }
+    if (typeof val === 'object' && 'min' in val && 'max' in val) {
+        return { min: Number((val as any).min), max: Number((val as any).max) };
+    }
+    return undefined;
+}
+
 function extractViewportChange(update: { ops: readonly unknown[] }): ViewportChange | null {
     for (const op of update.ops as Array<{ op: string; axes?: 'x' | 'y' | 'xy'; value?: unknown }>) {
-        if (op.op === 'set-viewport' && op.value) {
+        if (op.op === 'set-viewport' && op.value && typeof op.value === 'object') {
+            const rawVal = op.value as any;
+            const x = parseAxisInterval(rawVal.x);
+            const y = parseAxisInterval(rawVal.y);
             return {
                 axes: op.axes ?? 'xy',
-                value: op.value as ViewportChange['value'],
+                value: { x, y },
             };
         }
     }

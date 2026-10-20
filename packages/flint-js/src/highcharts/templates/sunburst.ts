@@ -34,37 +34,54 @@ export const hcSunburstChartDef: ChartTemplateDef = {
 
         const branches = extractCategories(table, colorField, channelSemantics.color?.ordinalSortOrder);
 
-        // Aggregate leaf values per (branch, leaf).
-        const leafValues = new Map<string, number>();
-        const leafNames = new Map<string, string>();
-        for (const row of table) {
-            const branch = String(row[colorField] ?? '');
-            const leaf = groupField ? String(row[groupField] ?? '') : '';
-            if (!branch || !leaf) continue;
-            const key = `${branch}·${leaf}`;
-            const v = sizeField ? Number(row[sizeField]) : 1;
-            leafValues.set(key, (leafValues.get(key) ?? 0) + (Number.isFinite(v) ? v : 1));
-            if (!leafNames.has(key)) leafNames.set(key, leaf);
-        }
-
         const data: any[] = [];
-        for (const branch of branches) {
-            const branchTotal = [...leafValues.entries()]
-                .filter(([key]) => key.startsWith(`${branch}·`))
-                .reduce((sum, [, v]) => sum + v, 0);
-            data.push({
-                id: branch,
-                name: branch,
-                value: branchTotal > 0 ? branchTotal : undefined,
-            });
-            for (const [key, value] of leafValues) {
-                if (!key.startsWith(`${branch}·`)) continue;
+        if (!groupField) {
+            const branchValues = new Map<string, number>();
+            for (const row of table) {
+                const branch = String(row[colorField] ?? '');
+                if (!branch) continue;
+                const v = sizeField ? Number(row[sizeField]) : 1;
+                branchValues.set(branch, (branchValues.get(branch) ?? 0) + (Number.isFinite(v) ? v : 1));
+            }
+            for (const branch of branches) {
                 data.push({
-                    id: key,
-                    parent: branch,
-                    name: leafNames.get(key) ?? key.slice(branch.length + 1),
-                    value,
+                    id: branch,
+                    name: branch,
+                    value: branchValues.get(branch) ?? 0,
                 });
+            }
+        } else {
+            // Aggregate leaf values per (branch, leaf).
+            const leafValues = new Map<string, number>();
+            const leafNames = new Map<string, string>();
+            for (const row of table) {
+                const branch = String(row[colorField] ?? '');
+                const leaf = String(row[groupField] ?? '');
+                if (!branch || !leaf) continue;
+                const key = `${branch}·${leaf}`;
+                const v = sizeField ? Number(row[sizeField]) : 1;
+                leafValues.set(key, (leafValues.get(key) ?? 0) + (Number.isFinite(v) ? v : 1));
+                if (!leafNames.has(key)) leafNames.set(key, leaf);
+            }
+
+            for (const branch of branches) {
+                const branchTotal = [...leafValues.entries()]
+                    .filter(([key]) => key.startsWith(`${branch}·`))
+                    .reduce((sum, [, v]) => sum + v, 0);
+                data.push({
+                    id: branch,
+                    name: branch,
+                    value: branchTotal > 0 ? branchTotal : undefined,
+                });
+                for (const [key, value] of leafValues) {
+                    if (!key.startsWith(`${branch}·`)) continue;
+                    data.push({
+                        id: key,
+                        parent: branch,
+                        name: leafNames.get(key) ?? key.slice(branch.length + 1),
+                        value,
+                    });
+                }
             }
         }
 

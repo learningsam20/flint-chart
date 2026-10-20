@@ -313,6 +313,11 @@ export function assembleHighcharts(input: ChartAssemblyInput): any {
             }
         }
 
+        const colorField = channelSemantics.color?.field;
+        const globalColorCategories = (colorField && channelSemantics.color?.type !== 'quantitative')
+            ? [...new Set(values.map((r: any) => String(r[colorField])))]
+            : undefined;
+
         const panelRows: any[][] = [];
         for (const cells of gridRows) {
             const rowPanels: any[] = [];
@@ -333,6 +338,17 @@ export function assembleHighcharts(input: ChartAssemblyInput): any {
                 hcApplyLayoutToSpec(panelOption, panelContext, []);
                 if (addTooltipsOpt) hcApplyTooltips(panelOption);
                 if (chartTemplate.postProcess) chartTemplate.postProcess(panelOption, panelContext);
+
+                // Align series colors to global categories so every panel uses matching colors
+                if (globalColorCategories && Array.isArray(panelOption.series) && Array.isArray(panelOption.colors)) {
+                    for (const s of panelOption.series) {
+                        const idx = globalColorCategories.indexOf(s.name);
+                        if (idx >= 0) {
+                            s.color = panelOption.colors[idx % panelOption.colors.length];
+                        }
+                    }
+                }
+
                 rowPanels.push({
                     colVal,
                     rowVal,
@@ -347,6 +363,8 @@ export function assembleHighcharts(input: ChartAssemblyInput): any {
             !!colField,
             !!rowField,
             wrapColumnOnly,
+            input.chart_spec.title !== undefined,
+            input.chart_spec.subtitle !== undefined,
         );
     } else {
         hcOption = structuredClone(chartTemplate.template);
@@ -393,6 +411,9 @@ export function assembleHighcharts(input: ChartAssemblyInput): any {
         if (channelSemantics.y?.type === 'quantitative' || channelSemantics.y?.type === 'temporal') navAxes.push('y');
     }
     const capabilities: import('../core/interaction-spec').InteractionCapability[] = [];
+    if (!hasFacet) {
+        capabilities.push('elements');
+    }
     if (hasLegend) capabilities.push('legend');
     if (navAxes.length > 0) capabilities.push('navigation');
 
@@ -429,6 +450,8 @@ function hcCombineFacetPanels(
     hasColHeader: boolean,
     hasRowHeader: boolean,
     colHeaderPerRow = false,
+    hasTitle = false,
+    hasSubtitle = false,
 ): any {
     const rows = panelRows.length;
     const cols = Math.max(1, ...panelRows.map(r => r.length));
@@ -438,6 +461,7 @@ function hcCombineFacetPanels(
     const gap = 16;
     const colHeaderH = hasColHeader ? 22 : 0;
     const rowHeaderW = hasRowHeader ? 28 : 0;
+    const titleH = (hasTitle ? 28 : 0) + (hasSubtitle ? 16 : 0);
 
     const headerBands = colHeaderPerRow ? rows : (hasColHeader ? 1 : 0);
 
@@ -448,6 +472,6 @@ function hcCombineFacetPanels(
         _facetCols: cols,
         _facetColHeaderPerRow: colHeaderPerRow,
         _width: rowHeaderW + cols * panelW + (cols - 1) * gap,
-        _height: headerBands * colHeaderH + rows * panelH + (rows - 1) * gap,
+        _height: titleH + headerBands * colHeaderH + rows * panelH + (rows - 1) * gap,
     };
 }

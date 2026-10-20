@@ -61,19 +61,54 @@ function buildLineXAxis(
 }
 
 /** Build [x, y] pairs for continuous axes, sorted by x. */
-function buildPairs(table: any[], xField: string, yField: string, temporal: boolean): [number, number][] {
+function buildPairs(
+    table: any[],
+    xField: string,
+    yField: string,
+    temporal: boolean,
+    yCategories?: string[],
+): [number, number][] {
     const pairs: [number, number][] = [];
     for (const row of table) {
         const x = row[xField];
         const y = row[yField];
         if (x == null || y == null) continue;
         const xv = temporal ? +new Date(x) : Number(x);
-        const yv = Number(y);
+        let yv: number;
+        if (yCategories && yCategories.length > 0) {
+            const idx = yCategories.indexOf(String(y));
+            if (idx < 0) continue;
+            yv = idx;
+        } else {
+            yv = Number(y);
+        }
         if (!Number.isFinite(xv) || !Number.isFinite(yv)) continue;
         pairs.push([xv, yv]);
     }
     pairs.sort((a, b) => a[0] - b[0]);
     return pairs;
+}
+
+function buildLineCategoryValues(
+    rows: any[],
+    xField: string,
+    yField: string,
+    categories: string[],
+    yCategories?: string[],
+): (number | null)[] {
+    if (!yCategories || yCategories.length === 0) {
+        return buildCategoryValues(rows, xField, yField, categories);
+    }
+    const map = new Map<string, number>();
+    for (const row of rows) {
+        const cat = String(row[xField] ?? '');
+        const val = row[yField];
+        if (val != null) {
+            const idx = yCategories.indexOf(String(val));
+            if (idx >= 0) map.set(cat, idx);
+        }
+    }
+    return categories.map(cat => map.get(cat) ?? null);
 }
 
 function buildLineSeries(
@@ -83,6 +118,7 @@ function buildLineSeries(
     yField: string,
     colorField: string | undefined,
     sizeField: string | undefined,
+    yCategories?: string[],
 ): any[] {
     const xField = xCS.field;
     const { dataMode } = buildLineXAxis(ctx, xCS);
@@ -98,8 +134,8 @@ function buildLineSeries(
             series.push({
                 name,
                 data: dataMode === 'category'
-                    ? buildCategoryValues(rows, xField, yField, allCategories)
-                    : buildPairs(rows, xField, yField, xCS.type === 'temporal'),
+                    ? buildLineCategoryValues(rows, xField, yField, allCategories, yCategories)
+                    : buildPairs(rows, xField, yField, xCS.type === 'temporal', yCategories),
                 ...(sizeField ? { marker: { radius: 5 } } : {}),
             });
         }
@@ -109,8 +145,8 @@ function buildLineSeries(
     series.push({
         name: yField,
         data: dataMode === 'category'
-            ? buildCategoryValues(table, xField, yField, allCategories)
-            : buildPairs(table, xField, yField, xCS.type === 'temporal'),
+            ? buildLineCategoryValues(table, xField, yField, allCategories, yCategories)
+            : buildPairs(table, xField, yField, xCS.type === 'temporal', yCategories),
         ...(sizeField ? { marker: { radius: 5 } } : {}),
     });
     return series;
@@ -135,14 +171,23 @@ export const hcLineChartDef: ChartTemplateDef = {
 
         if (!xCS?.field || !yCS?.field) return;
 
+        const isYCategory = yCS.type === 'nominal' || yCS.type === 'ordinal';
+        const yCategories = isYCategory ? extractCategories(table, yCS.field, yCS.ordinalSortOrder) : undefined;
+        const isDiscreteColor = colorField && channelSemantics.color?.type !== 'quantitative';
+
         const { xAxis } = buildLineXAxis(ctx, xCS);
-        const series = buildLineSeries(table, ctx, xCS, yCS.field, colorField, sizeField);
+        const series = buildLineSeries(table, ctx, xCS, yCS.field, isDiscreteColor ? colorField : undefined, sizeField, yCategories);
+
+        const yAxis: any = { title: { text: yCS.field } };
+        if (isYCategory && yCategories) {
+            yAxis.categories = yCategories;
+        }
 
         const option: any = {
             chart: { type: 'line' },
             xAxis,
-            yAxis: { title: { text: yCS.field } },
-            legend: colorField
+            yAxis,
+            legend: isDiscreteColor
                 ? { layout: 'horizontal', align: 'center', verticalAlign: 'bottom' }
                 : { enabled: false },
             plotOptions: {
@@ -195,8 +240,17 @@ export const hcAreaChartDef: ChartTemplateDef = {
 
         if (!xCS?.field || !yCS?.field) return;
 
+        const isYCategory = yCS.type === 'nominal' || yCS.type === 'ordinal';
+        const yCategories = isYCategory ? extractCategories(table, yCS.field, yCS.ordinalSortOrder) : undefined;
+        const isDiscreteColor = colorField && channelSemantics.color?.type !== 'quantitative';
+
         const { xAxis } = buildLineXAxis(ctx, xCS);
-        const series = buildLineSeries(table, ctx, xCS, yCS.field, colorField, undefined);
+        const series = buildLineSeries(table, ctx, xCS, yCS.field, isDiscreteColor ? colorField : undefined, undefined, yCategories);
+
+        const yAxis: any = { title: { text: yCS.field } };
+        if (isYCategory && yCategories) {
+            yAxis.categories = yCategories;
+        }
 
         const isSmooth = chartProperties?.interpolate === 'monotone';
         const chartType = isSmooth ? 'areaspline' : 'area';
@@ -204,8 +258,8 @@ export const hcAreaChartDef: ChartTemplateDef = {
         const option: any = {
             chart: { type: chartType },
             xAxis,
-            yAxis: { title: { text: yCS.field } },
-            legend: colorField
+            yAxis,
+            legend: isDiscreteColor
                 ? { layout: 'horizontal', align: 'center', verticalAlign: 'bottom' }
                 : { enabled: false },
             plotOptions: {

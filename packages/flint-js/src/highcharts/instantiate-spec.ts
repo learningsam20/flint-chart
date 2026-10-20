@@ -51,34 +51,40 @@ export function hcApplyLayoutToSpec(
     const { channelSemantics, layout, canvasSize } = context;
 
     // ── Canvas dimensions ────────────────────────────────────────────────
+    // ── Canvas dimensions ────────────────────────────────────────────────
     // Highcharts sizes to the chart container; the site renderer uses a
-    // wrapper div at the designed size. Only compute for axis-based charts.
-    const hasAxes = !!(option.xAxis || option.yAxis) && option.chart?.type !== 'pie';
-    if (hasAxes && !option._width) {
-        const PADDING = 80;
-        const xIsDiscrete = layout.xNominalCount > 0 || layout.xContinuousAsDiscrete > 0;
-        const yIsDiscrete = layout.yNominalCount > 0 || layout.yContinuousAsDiscrete > 0;
+    // wrapper div at the designed size.
+    const hasAxes = !!(option.xAxis || option.yAxis) && option.chart?.type !== 'pie' && option.chart?.type !== 'sunburst';
+    if (!option._width) {
+        if (hasAxes) {
+            const PADDING = 80;
+            const xIsDiscrete = layout.xNominalCount > 0 || layout.xContinuousAsDiscrete > 0;
+            const yIsDiscrete = layout.yNominalCount > 0 || layout.yContinuousAsDiscrete > 0;
 
-        let plotWidth: number;
-        let plotHeight: number;
+            let plotWidth: number;
+            let plotHeight: number;
 
-        if (xIsDiscrete && layout.xStepUnit !== 'group') {
-            const xItemCount = layout.xNominalCount || layout.xContinuousAsDiscrete || 0;
-            plotWidth = xItemCount > 0 ? layout.xStep * xItemCount : (layout.subplotWidth || canvasSize.width);
+            if (xIsDiscrete && layout.xStepUnit !== 'group') {
+                const xItemCount = layout.xNominalCount || layout.xContinuousAsDiscrete || 0;
+                plotWidth = xItemCount > 0 ? layout.xStep * xItemCount : (layout.subplotWidth || canvasSize.width);
+            } else {
+                plotWidth = layout.subplotWidth || canvasSize.width;
+            }
+
+            if (yIsDiscrete && layout.yStepUnit !== 'group') {
+                const yItemCount = layout.yNominalCount || layout.yContinuousAsDiscrete || 0;
+                plotHeight = yItemCount > 0 ? layout.yStep * yItemCount : (layout.subplotHeight || canvasSize.height);
+            } else {
+                plotHeight = layout.subplotHeight || canvasSize.height;
+            }
+
+            const legendGutter = option.legend && option.legend.enabled !== false ? 96 : 0;
+            option._width = plotWidth + PADDING + legendGutter;
+            option._height = plotHeight + PADDING;
         } else {
-            plotWidth = layout.subplotWidth || canvasSize.width;
+            option._width = layout.subplotWidth || canvasSize.width;
+            option._height = layout.subplotHeight || canvasSize.height;
         }
-
-        if (yIsDiscrete && layout.yStepUnit !== 'group') {
-            const yItemCount = layout.yNominalCount || layout.yContinuousAsDiscrete || 0;
-            plotHeight = yItemCount > 0 ? layout.yStep * yItemCount : (layout.subplotHeight || canvasSize.height);
-        } else {
-            plotHeight = layout.subplotHeight || canvasSize.height;
-        }
-
-        const legendGutter = option.legend && option.legend.enabled !== false ? 96 : 0;
-        option._width = plotWidth + PADDING + legendGutter;
-        option._height = plotHeight + PADDING;
         option.chart = option.chart || {};
         option.chart.width = option._width;
         option.chart.height = option._height;
@@ -96,6 +102,8 @@ export function hcApplyLayoutToSpec(
         // Highcharts category axes handle zero via the numeric y/x axis; only
         // pin soft zero bounds when the zero decision says to include zero and the axis
         // is numeric (not category/datetime).
+        const isCategoryAxis = axisObj.type === 'category' || Array.isArray(axisObj.categories) || cs.type === 'nominal' || cs.type === 'ordinal';
+        if (isCategoryAxis) continue;
         const isNumericAxis = !axisObj.type || axisObj.type === 'linear' || axisObj.type === 'value' || axisObj.type === 'datetime' || axisObj.type === 'logarithmic';
         if (!isNumericAxis) continue;
         if (decision.zero) {
@@ -167,6 +175,13 @@ export function hcApplyLayoutToSpec(
     }
     if (effectivePalette && effectivePalette.length > 0) {
         option.colors = [...effectivePalette];
+        if (option.colorAxis) {
+            if (effectivePalette.length >= 2) {
+                option.colorAxis.minColor = effectivePalette[0];
+                option.colorAxis.maxColor = effectivePalette[effectivePalette.length - 1];
+                option.colorAxis.stops = effectivePalette.map((c, i) => [i / (effectivePalette!.length - 1), c]);
+            }
+        }
     }
 
     // ── Credits (keep output clean; hosts can re-enable) ────────────────────

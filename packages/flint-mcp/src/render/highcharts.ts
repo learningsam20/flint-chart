@@ -193,6 +193,7 @@ export async function renderHighcharts(
                   ...(panel.option?.chart ?? {}),
                   width: panelW,
                   height: panelH,
+                  backgroundColor: background || (panel.option?.chart?.backgroundColor ?? 'transparent'),
                   animation: false,
                 },
               });
@@ -225,6 +226,7 @@ export async function renderHighcharts(
             ...(option?.chart ?? {}),
             width,
             height,
+            backgroundColor: background || (option?.chart?.backgroundColor ?? 'transparent'),
             animation: false,
           },
         });

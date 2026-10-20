@@ -118,7 +118,9 @@ export const hcScatterPlotDef: ChartTemplateDef = {
         const useBubble = !!sizeField;
         const series: any[] = [];
 
-        if (colorField) {
+        const isContinuousColor = colorField && channelSemantics.color?.type === 'quantitative';
+
+        if (colorField && !isContinuousColor) {
             const groups = groupBy(table, colorField);
             for (const [name, rows] of groups) {
                 series.push({
@@ -129,6 +131,24 @@ export const hcScatterPlotDef: ChartTemplateDef = {
                         : buildScatterPairs(rows, xCS.field, yCS.field, xMap.toCoord, yMap.toCoord),
                 });
             }
+        } else if (isContinuousColor) {
+            const points = table.map((row) => {
+                const x = xMap.toCoord(row[xCS.field!]);
+                const y = yMap.toCoord(row[yCS.field!]);
+                const val = Number(row[colorField!]);
+                if (x === null || y === null) return null;
+                return {
+                    x,
+                    y,
+                    ...(useBubble ? { z: Number(row[sizeField!]) || 1 } : {}),
+                    colorValue: Number.isFinite(val) ? val : undefined,
+                };
+            }).filter(Boolean);
+            series.push({
+                name: yCS.field,
+                type: useBubble ? 'bubble' : 'scatter',
+                data: points,
+            });
         } else {
             series.push({
                 name: yCS.field,
@@ -143,6 +163,7 @@ export const hcScatterPlotDef: ChartTemplateDef = {
             chart: { type: useBubble ? 'bubble' : 'scatter' },
             xAxis: xMap.axisConfig,
             yAxis: yMap.axisConfig,
+            ...(isContinuousColor ? { colorAxis: {} } : {}),
             legend: colorField
                 ? { layout: 'horizontal', align: 'center', verticalAlign: 'bottom' }
                 : { enabled: false },
