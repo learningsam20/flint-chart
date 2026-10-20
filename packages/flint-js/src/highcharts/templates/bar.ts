@@ -24,7 +24,6 @@ import {
     detectBandedAxisFromSemantics,
     detectBandedAxisForceDiscrete,
 } from '../../core/axis-detection';
-import { planBandDodge, resolveDodge } from '../../core/band-dodge';
 import { makeCartesianPivot } from '../../core/pivot';
 import { makeSortAction } from '../../core/encoding-actions';
 
@@ -131,16 +130,12 @@ export const hcBarChartDef: ChartTemplateDef = {
 
             const option: any = {
                 chart: { type: isHorizontal ? 'bar' : 'column' },
-                xAxis: isHorizontal
-                    ? { title: { text: valField } }
-                    : {
-                        categories,
-                        title: { text: catField },
-                        labels: { rotation: categoryAxisLabelRotateDeg(categories, catCS?.type) },
-                    },
-                yAxis: isHorizontal
-                    ? { categories, title: { text: catField } }
-                    : { title: { text: valField } },
+                xAxis: {
+                    categories,
+                    title: { text: catField },
+                    labels: { rotation: isHorizontal ? 0 : categoryAxisLabelRotateDeg(categories, catCS?.type) },
+                },
+                yAxis: { title: { text: valField } },
                 legend: { layout: 'horizontal', align: 'center', verticalAlign: 'bottom' },
                 series,
             };
@@ -169,16 +164,12 @@ export const hcBarChartDef: ChartTemplateDef = {
 
         const option: any = {
             chart: { type: isHorizontal ? 'bar' : 'column' },
-            xAxis: isHorizontal
-                ? { title: { text: valueLabel } }
-                : {
-                    categories,
-                    title: { text: catField },
-                    labels: { rotation: categoryAxisLabelRotateDeg(categories, catCS?.type) },
-                },
-            yAxis: isHorizontal
-                ? { categories, title: { text: catField } }
-                : { title: { text: valueLabel } },
+            xAxis: {
+                categories,
+                title: { text: catField },
+                labels: { rotation: isHorizontal ? 0 : categoryAxisLabelRotateDeg(categories, catCS?.type) },
+            },
+            yAxis: { title: { text: valueLabel } },
             legend: { enabled: false },
             series: [{
                 name: valueLabel,
@@ -224,7 +215,7 @@ export const hcStackedBarChartDef: ChartTemplateDef = {
         };
     },
     instantiate: (spec, ctx) => {
-        const { channelSemantics, table } = ctx;
+        const { channelSemantics, table, chartProperties } = ctx;
         const { categoryAxis, valueAxis } = detectAxes(channelSemantics);
         const colorField = channelSemantics.color?.field;
 
@@ -260,7 +251,7 @@ export const hcStackedBarChartDef: ChartTemplateDef = {
                 },
                 yAxis: { title: { text: 'Count' }, min: 0, allowDecimals: false },
                 legend: { layout: 'horizontal', align: 'center', verticalAlign: 'bottom' },
-                plotOptions: { series: { stacking: 'normal' } },
+                plotOptions: { series: { stacking: chartProperties?.stackMode === 'percent' ? 'percent' : 'normal' } },
                 series,
             };
             Object.assign(spec, option);
@@ -269,20 +260,17 @@ export const hcStackedBarChartDef: ChartTemplateDef = {
             return;
         }
 
+        const stackMode = chartProperties?.stackMode === 'percent' ? 'percent' : 'normal';
         const option: any = {
             chart: { type: isHorizontal ? 'bar' : 'column' },
-            xAxis: isHorizontal
-                ? { title: { text: valueLabel } }
-                : {
-                    categories,
-                    title: { text: catField },
-                    labels: { rotation: categoryAxisLabelRotateDeg(categories, catCS?.type) },
-                },
-            yAxis: isHorizontal
-                ? { categories, title: { text: catField } }
-                : { title: { text: valueLabel } },
+            xAxis: {
+                categories,
+                title: { text: catField },
+                labels: { rotation: isHorizontal ? 0 : categoryAxisLabelRotateDeg(categories, catCS?.type) },
+            },
+            yAxis: { title: { text: valueLabel } },
             legend: { layout: 'horizontal', align: 'center', verticalAlign: 'bottom' },
-            plotOptions: { series: { stacking: 'normal' } },
+            plotOptions: { series: { stacking: stackMode } },
             series: [],
         };
 
@@ -330,20 +318,13 @@ export const hcGroupedBarChartDef: ChartTemplateDef = {
     template: { mark: 'bar', encoding: {} },
     channels: ['x', 'y', 'group', 'color', 'column', 'row'],
     markCognitiveChannel: 'length',
-    declareLayoutMode: (cs, table, chartProperties) => {
+    declareLayoutMode: (cs, table, _chartProperties) => {
         const result = detectBandedAxisForceDiscrete(cs, table, { preferAxis: 'x' });
         const axis = result?.axis || 'x';
         const decl: import('../../core/types').LayoutDeclaration = {
             axisFlags: { [axis]: { banded: true } },
             resolvedTypes: result?.resolvedTypes,
         };
-        const groupField = cs.group?.field || cs.color?.field;
-        const axisField = cs[axis]?.field;
-        if (groupField && axisField) {
-            const plan = planBandDodge(table, axisField, groupField);
-            const { mode } = resolveDodge(plan, chartProperties?.dodge);
-            if (mode === 'local') decl.groupLaneCount = Math.max(1, plan.maxPerBand);
-        }
         return decl;
     },
     instantiate: (spec, ctx) => {
@@ -436,16 +417,12 @@ export const hcGroupedBarChartDef: ChartTemplateDef = {
 
         const option: any = {
             chart: { type: isHorizontal ? 'bar' : 'column' },
-            xAxis: isHorizontal
-                ? { title: { text: valField } }
-                : {
-                    categories,
-                    title: { text: catField },
-                    labels: { rotation: categoryAxisLabelRotateDeg(categories, catCS?.type) },
-                },
-            yAxis: isHorizontal
-                ? { categories, title: { text: catField } }
-                : { title: { text: valField } },
+            xAxis: {
+                categories,
+                title: { text: catField },
+                labels: { rotation: isHorizontal ? 0 : categoryAxisLabelRotateDeg(categories, catCS?.type) },
+            },
+            yAxis: { title: { text: valField } },
             legend: { layout: 'horizontal', align: 'center', verticalAlign: 'bottom' },
             series: [],
         };
@@ -465,27 +442,7 @@ export const hcGroupedBarChartDef: ChartTemplateDef = {
         delete spec.mark;
         delete spec.encoding;
     },
-    properties: [
-        {
-            key: 'dodge', label: 'Dodge', type: 'discrete',
-            options: [
-                { value: 'auto', label: 'Auto' },
-                { value: 'local', label: 'Local (compact)' },
-                { value: 'global', label: 'Global (aligned)' },
-            ],
-            defaultValue: 'auto',
-            check: (ctx) => {
-                const groupField = ctx.channelSemantics?.group?.field ?? ctx.encodings?.group?.field;
-                const axisField = ctx.channelSemantics?.x?.type === 'nominal'
-                    ? ctx.channelSemantics?.x?.field
-                    : ctx.channelSemantics?.y?.field;
-                const rows = ctx.data;
-                if (!groupField || !axisField || !rows) return { applicable: false };
-                const plan = planBandDodge(rows, axisField, groupField);
-                return { applicable: plan.ambiguous, recommendedValue: plan.mode === 'none' ? 'auto' : plan.mode };
-            },
-        } as ChartPropertyDef,
-    ],
+    properties: [],
     encodingActions: [makeSortAction()] as EncodingActionDef[],
     pivot: makeCartesianPivot({
         transpose: [['x', 'y']],

@@ -86,6 +86,9 @@ function buildLineSeries(
 ): any[] {
     const xField = xCS.field;
     const { dataMode } = buildLineXAxis(ctx, xCS);
+    const allCategories = dataMode === 'category'
+        ? extractCategories(table, xField, getCategoryOrder(ctx, 'x'))
+        : [];
 
     const series: any[] = [];
 
@@ -95,7 +98,7 @@ function buildLineSeries(
             series.push({
                 name,
                 data: dataMode === 'category'
-                    ? buildCategoryValues(rows, xField, yField, extractCategories(rows, xField, getCategoryOrder(ctx, 'x')))
+                    ? buildCategoryValues(rows, xField, yField, allCategories)
                     : buildPairs(rows, xField, yField, xCS.type === 'temporal'),
                 ...(sizeField ? { marker: { radius: 5 } } : {}),
             });
@@ -106,7 +109,7 @@ function buildLineSeries(
     series.push({
         name: yField,
         data: dataMode === 'category'
-            ? buildCategoryValues(table, xField, yField, extractCategories(table, xField, getCategoryOrder(ctx, 'x')))
+            ? buildCategoryValues(table, xField, yField, allCategories)
             : buildPairs(table, xField, yField, xCS.type === 'temporal'),
         ...(sizeField ? { marker: { radius: 5 } } : {}),
     });
@@ -185,7 +188,7 @@ export const hcAreaChartDef: ChartTemplateDef = {
         paramOverrides: { continuousMarkCrossSection: { x: 100, y: 20, seriesCountAxis: 'auto' } },
     }),
     instantiate: (spec, ctx) => {
-        const { channelSemantics, table } = ctx;
+        const { channelSemantics, table, chartProperties } = ctx;
         const xCS = channelSemantics.x;
         const yCS = channelSemantics.y;
         const colorField = channelSemantics.color?.field;
@@ -195,15 +198,18 @@ export const hcAreaChartDef: ChartTemplateDef = {
         const { xAxis } = buildLineXAxis(ctx, xCS);
         const series = buildLineSeries(table, ctx, xCS, yCS.field, colorField, undefined);
 
+        const isSmooth = chartProperties?.interpolate === 'monotone';
+        const chartType = isSmooth ? 'areaspline' : 'area';
+
         const option: any = {
-            chart: { type: 'area' },
+            chart: { type: chartType },
             xAxis,
             yAxis: { title: { text: yCS.field } },
             legend: colorField
                 ? { layout: 'horizontal', align: 'center', verticalAlign: 'bottom' }
                 : { enabled: false },
             plotOptions: {
-                area: {
+                [chartType]: {
                     marker: { enabled: false },
                     lineWidth: 1,
                     states: { hover: { lineWidth: 1 } },

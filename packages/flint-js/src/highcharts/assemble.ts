@@ -57,10 +57,17 @@ import { normalizeChartProperties } from '../core/normalize-properties';
 // ---------------------------------------------------------------------------
 
 function applyFieldDisplayNames(option: any, names: Record<string, string> | undefined): void {
-    if (!names) return;
+    if (!names || !option) return;
+    if (option._facetPanels) {
+        for (const row of option._facetPanels) {
+            for (const panel of row) {
+                if (panel?.option) applyFieldDisplayNames(panel.option, names);
+            }
+        }
+    }
     const displayName = (value: unknown) => typeof value === 'string' ? names[value] ?? value : value;
     for (const axisKey of ['xAxis', 'yAxis']) {
-        const axes = Array.isArray(option[axisKey]) ? option[axisKey] : [option[axisKey]];
+        const axes = Array.isArray(option[axisKey]) ? option[axisKey] : (option[axisKey] ? [option[axisKey]] : []);
         for (const axis of axes) {
             if (axis?.title?.text) axis.title.text = displayName(axis.title.text);
         }
@@ -102,7 +109,13 @@ export function assembleHighcharts(input: ChartAssemblyInput): any {
     const normalizedProps = normalizeChartProperties(
         chartTemplate.properties, input.chart_spec.chartProperties,
     );
-    const chartProperties = normalizedProps.chartProperties;
+    const chartProperties = normalizedProps.chartProperties ?? {};
+    if (input.chart_spec.title !== undefined && chartProperties.title === undefined) {
+        chartProperties.title = input.chart_spec.title;
+    }
+    if (input.chart_spec.subtitle !== undefined && chartProperties.subtitle === undefined) {
+        chartProperties.subtitle = input.chart_spec.subtitle;
+    }
     warnings.push(...normalizedProps.warnings);
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -265,22 +278,23 @@ export function assembleHighcharts(input: ChartAssemblyInput): any {
     const colField = channelSemantics.column?.field;
     const rowField = channelSemantics.row?.field;
     const hasFacet = !!(colField || rowField);
-    const hasAxes = chartTemplate.channels.includes('x') || chartTemplate.channels.includes('y');
 
     let hcOption: any;
 
-    if (hasFacet && hasAxes) {
+    if (hasFacet) {
         // ── Faceted rendering — Highcharts has no native small multiples ──
         // Emit a `_facet` config with a grid of per-panel options (same
         // contract as the Chart.js backend).
         const maxColsPerRow = facetGridResult?.columns ?? 1;
 
         let colValues: string[];
-        if (colField && channelSemantics.column?.type === 'quantitative') {
+        if (!colField) {
+            colValues = [''];
+        } else if (channelSemantics.column?.type === 'quantitative') {
             const raw = values.map((r: any) => r[colField]).filter((v: any) => v != null && typeof v === 'number' && !isNaN(v));
             colValues = [...new Set(raw)].map(String);
         } else {
-            colValues = colField ? [...new Set(values.map((r: any) => String(r[colField])))] : [];
+            colValues = [...new Set(values.map((r: any) => String(r[colField])))];
         }
 
         const wrapColumnOnly = !!colField && !rowField && maxColsPerRow < colValues.length;
@@ -362,6 +376,31 @@ export function assembleHighcharts(input: ChartAssemblyInput): any {
     if (legacyPivot.surface) {
         hcOption._pivot = legacyPivot.surface;
     }
+
+    if (hasFacet) {
+        if (input.chart_spec.title !== undefined) {
+            hcOption.title = { text: input.chart_spec.title };
+        }
+        if (input.chart_spec.subtitle !== undefined) {
+            hcOption.subtitle = { text: input.chart_spec.subtitle };
+        }
+    }
+
+    const hasLegend = !hasFacet && !!(hcOption.legend && hcOption.legend.enabled !== false && (hcOption.series?.length > 1 || channelSemantics.color?.field || channelSemantics.group?.field));
+    const navAxes: ('x' | 'y')[] = [];
+    if (!hasFacet) {
+        if (channelSemantics.x?.type === 'quantitative' || channelSemantics.x?.type === 'temporal') navAxes.push('x');
+        if (channelSemantics.y?.type === 'quantitative' || channelSemantics.y?.type === 'temporal') navAxes.push('y');
+    }
+    const capabilities: import('../core/interaction-spec').InteractionCapability[] = [];
+    if (hasLegend) capabilities.push('legend');
+    if (navAxes.length > 0) capabilities.push('navigation');
+
+    hcOption._interactionSemantics = {
+        chartType,
+        capabilities,
+        navigationAxes: navAxes,
+    };
 
     applyFieldDisplayNames(hcOption, input.field_display_names);
 

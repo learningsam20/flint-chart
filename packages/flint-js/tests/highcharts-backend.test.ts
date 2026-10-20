@@ -98,8 +98,8 @@ describe('Highcharts backend', () => {
     )) as any;
 
     expect(option.chart.type).toBe('bar');
-    expect(option.yAxis.categories).toEqual(['North', 'East', 'South']);
-    expect(option.xAxis.title.text).toBe('revenue');
+    expect(option.xAxis.categories).toEqual(['North', 'East', 'South']);
+    expect(option.yAxis.title.text).toBe('revenue');
   });
 
   it('assembles a Stacked Bar Chart with one series per color', () => {
@@ -257,7 +257,7 @@ describe('Highcharts backend', () => {
     expect(option.chart.polar).toBe(true);
     expect(option.xAxis.categories).toEqual(['Speed', 'Cost']);
     expect(option.series).toHaveLength(2);
-    expect(option.series[0].type).toBe('line');
+    expect(option.series[0].type).toBe('area');
   });
 
   it('assembles a Heatmap with a colorAxis and [x, y, value] data', () => {
@@ -300,6 +300,7 @@ describe('Highcharts backend', () => {
       { Step: 'Start', Value: 100 },
       { Step: 'Up', Value: 50 },
       { Step: 'Down', Value: -30 },
+      { Step: 'Total', Value: 120 },
     ];
     const option = assembleHighcharts(input(
       'Waterfall Chart',
@@ -309,11 +310,12 @@ describe('Highcharts backend', () => {
     )) as any;
 
     expect(option.series[0].type).toBe('waterfall');
-    expect(option.xAxis.categories).toEqual(['Start', 'Up', 'Down']);
-    expect(option.series[0].data[0].isSum).toBe(true);
+    expect(option.xAxis.categories).toEqual(['Start', 'Up', 'Down', 'Total']);
+    expect(option.series[0].data[0].isSum).toBeFalsy();
     expect(option.series[0].data[0].y).toBe(100);
     expect(option.series[0].data[1].y).toBe(50);
     expect(option.series[0].data[2].y).toBe(-30);
+    expect(option.series[0].data[3].isSum).toBe(true);
   });
 
   it('assembles a Sunburst Chart with a hierarchical tree', () => {

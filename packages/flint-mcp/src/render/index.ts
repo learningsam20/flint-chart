@@ -81,7 +81,19 @@ export async function renderChart(
   // metadata and are safe to remove for every backend.
   const w = width ?? spec?.width ?? undefined;
   const h = height ?? spec?.height ?? undefined;
+  const isFacet = spec?._facet;
+  const facetPanels = spec?._facetPanels;
+  const facetRows = spec?._facetRows;
+  const facetCols = spec?._facetCols;
+  const facetColHeaderPerRow = spec?._facetColHeaderPerRow;
   stripPrivateKeys(spec);
+  if (backend === 'highcharts' && (isFacet || facetPanels)) {
+    spec._facet = true;
+    spec._facetPanels = facetPanels;
+    spec._facetRows = facetRows;
+    spec._facetCols = facetCols;
+    spec._facetColHeaderPerRow = facetColHeaderPerRow;
+  }
 
   let artifact: Omit<RenderResult, 'warnings'>;
   switch (backend) {

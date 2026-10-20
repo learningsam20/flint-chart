@@ -76,11 +76,11 @@ function buildPieData(
         }
     }
 
-    sortSlicesInPlace(
-        slices.map(s => s.name),
-        slices.map(s => s.y),
-        sortSlices,
-    );
+    if (sortSlices === 'descending') {
+        slices.sort((a, b) => b.y - a.y);
+    } else if (sortSlices === 'ascending') {
+        slices.sort((a, b) => a.y - b.y);
+    }
     return slices;
 }
 

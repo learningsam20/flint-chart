@@ -16,6 +16,7 @@ export default defineConfig({
     'vegalite/interactive': 'src/vegalite/interactive.ts',
     'echarts/interactive': 'src/echarts/interactive.ts',
     'chartjs/interactive': 'src/chartjs/interactive.ts',
+    'highcharts/interactive': 'src/highcharts/interactive.ts',
     'plotly/interactive': 'src/plotly/interactive.ts',
     'test-data/index': 'src/test-data/index.ts',
     'gallery/index': 'src/gallery/index.ts',

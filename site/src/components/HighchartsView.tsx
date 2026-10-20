@@ -83,10 +83,9 @@ function HighchartsSingleView({
   }, [option, designedWidth, renderHeight]);
 
   useEffect(() => {
-    const chart = chartRef.current;
     return () => {
       try {
-        chart?.destroy();
+        chartRef.current?.destroy();
       } catch {
         // A chart that failed to initialize can throw on destroy; unmount
         // must still complete.
@@ -95,23 +94,23 @@ function HighchartsSingleView({
     };
   }, []);
 
-  if (error) {
-    return (
-      <pre style={{ color: siteTheme.error, fontSize: 11, whiteSpace: 'pre-wrap', margin: 0 }}>
-        {error}
-      </pre>
-    );
-  }
-
   return (
-    <div
-      ref={ref}
-      style={{
-        width: designedWidth != null ? designedWidth : '100%',
-        height: renderHeight,
-        maxWidth: constrain ? '100%' : undefined,
-      }}
-    />
+    <>
+      {error && (
+        <pre style={{ color: siteTheme.error, fontSize: 11, whiteSpace: 'pre-wrap', margin: 0 }}>
+          {error}
+        </pre>
+      )}
+      <div
+        ref={ref}
+        style={{
+          display: error ? 'none' : 'block',
+          width: designedWidth != null ? designedWidth : '100%',
+          height: renderHeight,
+          maxWidth: constrain ? '100%' : undefined,
+        }}
+      />
+    </>
   );
 }
 

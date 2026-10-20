@@ -175,7 +175,7 @@ export function buildInteractiveChart(
     const hoverTolerance = Math.max(0, ...canvasInteractions
         .filter((interaction) => interaction.eventSource.gesture === 'hover')
         .map((interaction) => interaction.eventSource.targetTolerance ?? 0));
-    if (backend !== 'vegalite' && interactions.length > 0) {
+    if (backend !== 'vegalite' && backend !== 'highcharts' && interactions.length > 0) {
         return mountInteractiveChartSurface(
             container,
             input,
@@ -261,7 +261,9 @@ export function buildInteractiveChart(
                 {
                     async mount(chartContainer, chartInput) {
                         const { createHighchartsInteractiveRenderer } = await import('../highcharts/interactive');
-                        return createHighchartsInteractiveRenderer().mount(chartContainer, chartInput);
+                        return createHighchartsInteractiveRenderer({
+                            interactions: canvasInteractions,
+                        }).mount(chartContainer, chartInput);
                     },
                 },
                 { className, ariaLabel, chartId, updates, interactions, warnings },

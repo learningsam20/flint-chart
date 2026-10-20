@@ -36,7 +36,7 @@ export function composeInteractiveOptions(input: ComposeInput, options: ComposeO
     const code = options.interactions ?? [];
     const warnings: ChartWarning[] = [];
     let specInteractions = resolved.interactions;
-    if (options.backend !== 'vegalite' && code.length === 0 && specInteractions.length > 0) {
+    if (options.backend !== 'vegalite' && options.backend !== 'highcharts' && code.length === 0 && specInteractions.length > 0) {
         warnings.push({
             severity: 'info',
             code: 'interactions_ignored',

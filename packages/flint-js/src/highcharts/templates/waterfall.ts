@@ -64,12 +64,13 @@ export const hcWaterfallChartDef: ChartTemplateDef = {
         // cumulative), so it is passed through unchanged.
         const data = values.map((v, i) => {
             const t = types[i];
-            const isTotal = t === 'start' || t === 'end';
+            const isClosingTotal = t === 'end';
+            const isTotal = t === 'start' || isClosingTotal;
             const point: any = {
                 y: v,
                 color: isTotal ? TOTAL_COLOR : v >= 0 ? UP_COLOR : DOWN_COLOR,
             };
-            if (isTotal) point.isSum = true;
+            if (isClosingTotal) point.isSum = true;
             return point;
         });
 
@@ -81,11 +82,10 @@ export const hcWaterfallChartDef: ChartTemplateDef = {
             },
             yAxis: {
                 title: { text: valField },
-                min: Math.min(0, ...values),
             },
             legend: { enabled: false },
             tooltip: {
-                pointFormat: '<b>{point.low}</b> → <b>{point.high}</b> ({point.change:+.2f})',
+                pointFormat: '{series.name}: <b>{point.y}</b>',
             },
             plotOptions: {
                 waterfall: {

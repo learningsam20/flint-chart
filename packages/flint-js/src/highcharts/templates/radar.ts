@@ -34,6 +34,7 @@ export const hcRadarChartDef: ChartTemplateDef = {
         if (metrics.length < 2) return;
 
         const filled = chartProperties?.filled !== false;
+        const seriesType = filled ? 'area' : 'line';
 
         const series: any[] = [];
 
@@ -51,7 +52,7 @@ export const hcRadarChartDef: ChartTemplateDef = {
                 }
                 series.push({
                     name,
-                    type: 'line',
+                    type: seriesType,
                     data: metrics.map(m => {
                         const agg = metricVals.get(m);
                         return agg && agg.count > 0 ? agg.sum / agg.count : 0;
@@ -71,7 +72,7 @@ export const hcRadarChartDef: ChartTemplateDef = {
             }
             series.push({
                 name: valueField,
-                type: 'line',
+                type: seriesType,
                 data: metrics.map(m => {
                     const agg = metricVals.get(m);
                     return agg && agg.count > 0 ? agg.sum / agg.count : 0;
@@ -81,7 +82,7 @@ export const hcRadarChartDef: ChartTemplateDef = {
         }
 
         const option: any = {
-            chart: { polar: true, type: 'line' },
+            chart: { polar: true, type: seriesType },
             xAxis: {
                 categories: metrics,
                 tickmarkPlacement: 'on',

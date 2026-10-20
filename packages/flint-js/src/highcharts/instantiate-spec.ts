@@ -85,19 +85,22 @@ export function hcApplyLayoutToSpec(
     }
 
     // ── Zero-baseline and domain padding (value axes) ───────────────────────
-    for (const axis of ['x', 'y'] as const) {
-        const axisObj = option[`${axis}Axis`];
+    const isInverted = option.chart?.type === 'bar' || option.chart?.inverted === true;
+    for (const hcAxis of ['x', 'y'] as const) {
+        const axisObj = option[`${hcAxis}Axis`];
         if (!axisObj) continue;
-        const cs = channelSemantics[axis];
+        const flintChannel = isInverted ? (hcAxis === 'x' ? 'y' : 'x') : hcAxis;
+        const cs = channelSemantics[flintChannel];
         if (!cs?.zero) continue;
         const decision = cs.zero;
         // Highcharts category axes handle zero via the numeric y/x axis; only
-        // pin min: 0 when the zero decision says to include zero and the axis
+        // pin soft zero bounds when the zero decision says to include zero and the axis
         // is numeric (not category/datetime).
         const isNumericAxis = !axisObj.type || axisObj.type === 'linear' || axisObj.type === 'value' || axisObj.type === 'datetime' || axisObj.type === 'logarithmic';
         if (!isNumericAxis) continue;
-        if (decision.zero && axisObj.min === undefined) {
-            axisObj.min = 0;
+        if (decision.zero) {
+            if (axisObj.softMin === undefined && axisObj.min === undefined) axisObj.softMin = 0;
+            if (axisObj.softMax === undefined && axisObj.max === undefined) axisObj.softMax = 0;
         }
         if (!decision.zero && decision.domainPadFraction > 0 && cs.field) {
             const numericValues = context.table
@@ -132,11 +135,15 @@ export function hcApplyLayoutToSpec(
     }
 
     // ── Title / subtitle ────────────────────────────────────────────────────
-    if (context.chartProperties?.title != null) {
-        option.title = { text: String(context.chartProperties.title) };
+    const titleText = context.chartProperties?.title;
+    if (titleText != null && titleText !== '') {
+        option.title = { text: String(titleText) };
+    } else {
+        option.title = { text: null };
     }
-    if (context.chartProperties?.subtitle != null) {
-        option.subtitle = { text: String(context.chartProperties.subtitle) };
+    const subtitleText = context.chartProperties?.subtitle;
+    if (subtitleText != null && subtitleText !== '') {
+        option.subtitle = { text: String(subtitleText) };
     }
 
     // ── Color scheme ────────────────────────────────────────────────────────

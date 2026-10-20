@@ -319,23 +319,11 @@ export function validateInteractionSpec(
     assembled: unknown,
 ): ChartWarning[] {
     if (!input.interaction_spec) return [];
-    if (backend === 'vegalite') {
+    if (backend === 'vegalite' || backend === 'highcharts') {
         try {
             const resolved = resolveInteractionSpec(input.interaction_spec);
             const { _interactionSemantics: plan } = assembled as { _interactionSemantics: Parameters<typeof admitInteractions>[0] };
             return [...admitInteractions(plan, resolved.interactions).warnings];
-        } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            return [{ severity: 'error', code: 'invalid_interaction_spec', message }];
-        }
-    }
-    if (backend === 'highcharts') {
-        try {
-            const resolved = resolveInteractionSpec(input.interaction_spec);
-            if (!resolved.interactions.length) {
-                return [{ severity: 'info', code: 'interactions_ignored', message: 'interaction_spec declares no interactions.' }];
-            }
-            return [];
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             return [{ severity: 'error', code: 'invalid_interaction_spec', message }];

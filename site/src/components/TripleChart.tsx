@@ -5,6 +5,7 @@ import { InteractiveVegaLiteView, hasInteractionEntries } from './InteractiveVeg
 import { EChartsView } from './EChartsView';
 import { ChartjsView } from './ChartjsView';
 import { PlotlyView } from './PlotlyView';
+import { HighchartsView } from './HighchartsView';
 import { testCaseToAssemblyInput } from '../shared/test-case-utils';
 import {
   BACKENDS,
@@ -135,6 +136,7 @@ export function TripleChart({
             {backend === 'echarts' && <EChartsView option={compiled.value} height={320} />}
             {backend === 'chartjs' && <ChartjsView config={compiled.value} height={320} />}
             {backend === 'plotly' && <PlotlyView figure={compiled.value} height={320} />}
+            {backend === 'highcharts' && <HighchartsView option={compiled.value} height={320} />}
           </>
         ) : (
           <pre style={{ color: siteTheme.error, fontSize: 11, whiteSpace: 'pre-wrap', margin: 0 }}>

@@ -9,4 +9,3 @@ export { assembleHighcharts, getHighchartsPivot, getHighchartsTransform } from '
 export { hcApplyLayoutToSpec, hcApplyTooltips } from './instantiate-spec';
 export { hcTemplateDefs, hcAllTemplateDefs, hcGetTemplateDef, hcGetTemplateChannels } from './templates';
 export { getPaletteForScheme, pickHighchartsPalette } from './colormap';
-export { createHighchartsInteractiveRenderer } from './interactive';

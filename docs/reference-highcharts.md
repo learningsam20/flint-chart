@@ -49,9 +49,7 @@ _No template-specific parameters._
 
 **Encoding channels:** `x`, `y`, `group`, `color`, `column`, `row`
 
-| Parameter | Control | Domain | Default | Availability | Description |
-|---|---|---|---|---|---|
-| `dodge` | choice | `auto` (Auto), `local` (Local (compact)), `global` (Global (aligned)) | `auto` | conditional | Dodge |
+_No template-specific parameters._
 
 ### ![](chart-icon-column-stacked.svg) Stacked Bar Chart
 

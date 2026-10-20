@@ -5,6 +5,7 @@ import { VegaLiteView } from './VegaLiteView';
 import { EChartsView } from './EChartsView';
 import { ChartjsView } from './ChartjsView';
 import { PlotlyView } from './PlotlyView';
+import { HighchartsView } from './HighchartsView';
 import { testCaseToAssemblyInput, thumbnailCanvasSize, withHouse, type CanvasSize } from '../shared/test-case-utils';
 import { BACKENDS, type PreviewBackend } from '../shared/supported-backends';
 import { siteTheme } from '../shared/theme';
@@ -94,5 +95,6 @@ export function WallChart({
   if (backend === 'vegalite') return <VegaLiteView spec={compiled.value} />;
   if (backend === 'echarts') return <EChartsView option={compiled.value} constrain={false} />;
   if (backend === 'plotly') return <PlotlyView figure={compiled.value} constrain={false} />;
+  if (backend === 'highcharts') return <HighchartsView option={compiled.value} constrain={false} />;
   return <ChartjsView config={compiled.value} constrain={false} />;
 }
