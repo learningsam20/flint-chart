@@ -2,19 +2,18 @@
 // Licensed under the MIT License.
 
 /**
- * Flint board MCP App: several charts in one live card.
+ * The board card: several charts under one headline.
  *
- * The card draws the board from its tool result, then reads the board again
- * through the app-only `read_board` tool, so the agent's add_chart and
- * update_chart calls redraw this card instead of opening new ones. Links turn a
- * reader's selection on one chart into an emphasis layer on the others, and the
- * card sends one model context that covers every chart.
+ * Each show call opens a new card with the board's current version; a card
+ * keeps the version it was handed. The reader arranges and restyles the newest card in
+ * place; the server keeps nothing the reader changes on an earlier card. Links
+ * turn a reader's selection on one chart into an emphasis layer on the others,
+ * and the card sends one model context that covers every chart.
  */
 import type { App, McpUiHostContext } from '@modelcontextprotocol/ext-apps';
-import { useApp } from '@modelcontextprotocol/ext-apps/react';
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
-import type { ChartAssemblyInput, ChartTable, ChartUpdate, ChartWarning, UpdateCheck } from 'flint-chart';
-import { assembleVegaLite, drawsAsTable, resolveThemeSpec, validateChart } from 'flint-chart';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import type { ChartAssemblyInput, ChartTable, ChartUpdate, ChartWarning, ClosingRule, UpdateCheck } from 'flint-chart';
+import { assembleVegaLite, canvasFurnitureMarkup, drawsAsTable, headerFurnitureItems, planFrameFurniture, validateChart } from 'flint-chart';
 import type { ChartChange, ChartState, InteractiveChartSurface } from 'flint-chart/interactive';
 import { FlintChart, FlintTable } from 'flint-chart/react';
 import { expressionInterpreter } from 'vega-interpreter';
@@ -44,20 +43,21 @@ import { APP_PREVIEW_CANVAS_SIZE, usesAutoPreviewSize, withAppPreviewDefaults } 
 import { boardPng } from './board-export';
 import { SelectionChips, chipText, impliedParts, partText } from './selection-chips';
 import { ViewSwitch, useCellViews, useChartTable, type CellView } from './chart-table-view';
-import { ActionButton, ThemeControl } from './FlintApp';
+import { ActionButton, ThemeControl } from './controls';
+import { STANDING_NOTE, useStanding } from './standing';
 import { LINK_LAYER, conditionUpdates, gestureParts, shownFields, type ChartLink, type LinkCondition, type LinkSpec } from 'flint-chart/interactive';
 
-declare const __FLINT_MCP_VERSION__: string;
-
-interface BoardChart {
+export interface BoardChart {
   id: string;
   input: ChartAssemblyInput;
   updates?: ChartUpdate[];
   layout?: ChartLayout;
+  view?: CellView;
 }
 
-interface Board {
+export interface Board {
   id: string;
+  kind: 'chart' | 'board';
   title?: string;
   subtitle?: string;
   source?: string;
@@ -70,8 +70,6 @@ interface Board {
   link_spec?: LinkSpec;
   linked?: Record<string, ChartLink>;
 }
-
-const POLL_MS = 1500;
 
 const EXPORT_LABEL = {
   idle: 'Copy board as PNG',
@@ -117,14 +115,6 @@ function checksOf(chart: BoardChart): readonly UpdateCheck[] | undefined {
   return checksCache.get(chart);
 }
 
-/** A branding mark of the theme, drawn once on the board's frame instead of in every cell. */
-interface Furniture {
-  kind: string;
-  color?: string;
-  width?: number;
-  height?: number;
-}
-
 /** The fonts and colours of the board's frame, read from the theme its charts draw in. */
 interface BoardStyle {
   background: string;
@@ -132,7 +122,6 @@ interface BoardStyle {
   muted: string;
   font: string;
   titleFont: string;
-  furniture: Furniture[];
 }
 
 const DEFAULT_STYLE: BoardStyle = {
@@ -141,7 +130,6 @@ const DEFAULT_STYLE: BoardStyle = {
   muted: '#6b6b6b',
   font: 'Arial, Roboto, "Helvetica Neue", sans-serif',
   titleFont: 'Arial, Roboto, "Helvetica Neue", sans-serif',
-  furniture: [],
 };
 
 function boardStyle(theme: ChartAssemblyInput['theme_spec']): BoardStyle {
@@ -153,14 +141,7 @@ function boardStyle(theme: ChartAssemblyInput['theme_spec']): BoardStyle {
       chart_spec: { chartType: 'Bar Chart', title: 't', subtitle: 's', encodings: { x: { field: 'a' }, y: { field: 'b' } } },
     } as ChartAssemblyInput) as { background?: unknown; config?: { font?: string; title?: Record<string, unknown> } };
     const title = spec.config?.title ?? {};
-    let furniture: Furniture[] = [];
-    try {
-      furniture = (resolveThemeSpec(theme as Parameters<typeof resolveThemeSpec>[0]) as { furniture?: Furniture[] } | undefined)?.furniture ?? [];
-    } catch {
-      furniture = [];
-    }
     return {
-      furniture,
       background: typeof spec.background === 'string' ? spec.background : DEFAULT_STYLE.background,
       ink: typeof title.color === 'string' ? title.color : DEFAULT_STYLE.ink,
       muted: typeof title.subtitleColor === 'string' ? title.subtitleColor : DEFAULT_STYLE.muted,
@@ -172,33 +153,53 @@ function boardStyle(theme: ChartAssemblyInput['theme_spec']): BoardStyle {
   }
 }
 
-/** The chart with its heading lifted out to the cell, as the chart card plans it for a room up to `height` tall. */
-function roomSpec(input: ChartAssemblyInput, height: number): ChartAssemblyInput {
-  const { title: _title, subtitle: _subtitle, ...chartSpec } = input.chart_spec;
-  return withAppPreviewDefaults(
-    { ...input, theme_spec: withoutFurniture(input.theme_spec), chart_spec: chartSpec },
-    { width: APP_PREVIEW_CANVAS_SIZE.width, height },
-  );
+/** The theme every chart that sets one sets, when they agree on one. */
+function sharedChartTheme(charts: readonly BoardChart[]): ChartAssemblyInput['theme_spec'] {
+  const themes = new Map(charts
+    .filter((chart) => chart.input.theme_spec !== undefined)
+    .map((chart) => [JSON.stringify(chart.input.theme_spec), chart.input.theme_spec]));
+  return themes.size === 1 ? [...themes.values()][0] : undefined;
 }
 
-/** The theme without its branding marks, which the board draws once on its frame. */
-function withoutFurniture(theme: ChartAssemblyInput['theme_spec']): ChartAssemblyInput['theme_spec'] {
-  if (theme === undefined) return theme;
-  return (typeof theme === 'string' ? { extends: theme, furniture: [] } : { ...theme, furniture: [] }) as ChartAssemblyInput['theme_spec'];
+/** The board's outer width and its margin, which the theme's furniture on its frame is placed against. */
+interface FrameBox {
+  width: number;
+  left: number;
+  right: number;
+  top: number;
+}
+
+function readFrameBox(node: HTMLElement | null): FrameBox | undefined {
+  if (!node || node.clientWidth === 0) return undefined;
+  const style = getComputedStyle(node);
+  return {
+    width: node.clientWidth,
+    left: parseFloat(style.paddingLeft) || 0,
+    right: parseFloat(style.paddingRight) || 0,
+    top: parseFloat(style.paddingTop) || 0,
+  };
+}
+
+/** A rule of the theme across the board, as a chart draws it across its block. */
+function ruleStyle(rule: ClosingRule, ink: string): CSSProperties {
+  return { height: rule.height, background: rule.color ?? ink, ...(rule.stated ? { width: rule.width } : {}) };
+}
+
+/** The chart as the chart card plans it for a room up to `height` tall. */
+function roomSpec(input: ChartAssemblyInput, height: number): ChartAssemblyInput {
+  return withAppPreviewDefaults(input, { width: APP_PREVIEW_CANVAS_SIZE.width, height });
 }
 
 /** The widest a KPI tile is planned, so a tile alone in a wide cell stays a tile. */
 const MAX_TILE_WIDTH = 260;
 
-/** The chart as a cell draws it: its heading taken out to the cell, sized to the cell's room. */
+/** The chart as a cell draws it, sized to the cell's room. */
 function cellSpec(input: ChartAssemblyInput, width: number, height: number): ChartAssemblyInput {
-  const { title: _title, subtitle: _subtitle, ...chartSpec } = input.chart_spec;
   const size = { width: isKpi(input.chart_spec.chartType) ? Math.min(width, MAX_TILE_WIDTH) : width, height };
   return {
     ...input,
-    theme_spec: withoutFurniture(input.theme_spec),
     chart_spec: {
-      ...chartSpec,
+      ...input.chart_spec,
       ...(input.chart_spec.baseSize ? {} : { baseSize: size, canvasSize: size }),
     },
     options: { ...input.options, bandStepFit: input.options?.bandStepFit ?? 1 },
@@ -279,18 +280,14 @@ function BoardCell({
   const handleWarnings = useCallback((warnings: readonly ChartWarning[]) => onWarnings(chart.id, warnings), [chart.id, onWarnings]);
   const table = useCellTable(chart.id, spec, view, onTable);
   const tableType = drawsAsTable(input.chart_spec.chartType);
-  const { title, subtitle } = input.chart_spec;
+  const { title } = input.chart_spec;
   return (
     <section
       className={kpi ? 'board-cell board-cell-kpi' : 'board-cell'}
       data-chart-id={chart.id}
       style={{ gridColumn: `span ${units}` }}
     >
-      <header className="board-cell-header">
-        {title && <h2 className="board-cell-title">{title}</h2>}
-        {subtitle && <p className="board-cell-subtitle">{subtitle}</p>}
-        {!tableType && <ViewSwitch view={view} onView={(next) => onView(chart.id, next)} name={title ?? chart.id} />}
-      </header>
+      {!tableType && <ViewSwitch view={view} onView={(next) => onView(chart.id, next)} name={title ?? chart.id} />}
       <div
         className={cellBodyClass('board-cell-chart', tableType, table)}
         style={tableType ? { height } : undefined}
@@ -372,24 +369,8 @@ function useDrawInputs(
 
 /** The space between arranged charts, below each one. */
 const GRID_ROW_GAP = 16;
-/** A tile's height besides its heading and chart: the rule and padding above, the gap under the heading. */
-const TILE_CHROME = 19;
-
-/** The height of an element, read as it changes; null until the element is first measured. */
-function useHeight<T extends HTMLElement>(): [(node: T | null) => void, number | null] {
-  const [height, setHeight] = useState<number | null>(null);
-  const observer = useRef<ResizeObserver | null>(null);
-  const ref = useCallback((node: T | null) => {
-    observer.current?.disconnect();
-    if (!node) return;
-    const read = () => setHeight((prev) => (prev === node.offsetHeight ? prev : node.offsetHeight));
-    read();
-    observer.current = new ResizeObserver(read);
-    observer.current.observe(node);
-  }, []);
-  useEffect(() => () => observer.current?.disconnect(), []);
-  return [ref, height];
-}
+/** A tile's height besides its chart: the rule and the padding above. */
+const TILE_CHROME = 11;
 
 type GridGesture = 'move' | 'right' | 'bottom' | 'corner' | 'corner-left';
 
@@ -430,10 +411,8 @@ function GridTile({
   onChange: (id: string, change: ChartChange) => void;
   onWarnings: (id: string, warnings: readonly ChartWarning[]) => void;
 }) {
-  const [measureHeader, measuredHeader] = useHeight<HTMLElement>();
-  const headerHeight = measuredHeader ?? 0;
-  const chartHeight = Math.max(60, box.height - headerHeight - TILE_CHROME);
-  const settledHeight = Math.max(60, settled.height - headerHeight - TILE_CHROME);
+  const chartHeight = Math.max(60, box.height - TILE_CHROME);
+  const settledHeight = Math.max(60, settled.height - TILE_CHROME);
   const [fit, setFit] = useState<Fit | null>(null);
   const current = fit && fit.input === input && fit.width === settled.width && fit.height === settledHeight ? fit : null;
   const spec = useMemo(
@@ -453,7 +432,7 @@ function GridTile({
   }, [chart.id, onRender, current, dragging, input, settled.width, settledHeight]);
   const handleChange = useCallback((change: ChartChange) => onChange(chart.id, change), [chart.id, onChange]);
   const handleWarnings = useCallback((warnings: readonly ChartWarning[]) => onWarnings(chart.id, warnings), [chart.id, onWarnings]);
-  const { title, subtitle } = input.chart_spec;
+  const { title } = input.chart_spec;
   const handle = (kind: GridGesture) => ({ onPointerDown: (event: ReactPointerEvent<HTMLElement>) => onGesture(kind, chart.id, event) });
   const table = useCellTable(chart.id, spec, view, onTable);
   const tableType = drawsAsTable(input.chart_spec.chartType);
@@ -463,17 +442,12 @@ function GridTile({
       data-chart-id={chart.id}
       style={box}
     >
-      <header className="board-cell-header board-tile-header" ref={measureHeader}>
-        {title && <h2 className="board-cell-title">{title}</h2>}
-        {subtitle && <p className="board-cell-subtitle">{subtitle}</p>}
-        {editing && !title && !subtitle && <span className="board-tile-grip">{chart.id}</span>}
-        {!editing && !tableType && <ViewSwitch view={view} onView={(next) => onView(chart.id, next)} name={title ?? chart.id} />}
-      </header>
+      {!editing && !tableType && <ViewSwitch view={view} onView={(next) => onView(chart.id, next)} name={title ?? chart.id} />}
       <div
         className={cellBodyClass('board-cell-chart board-tile-chart', tableType, table)}
         style={tableType ? { height: chartHeight } : undefined}
       >
-        {!tableType && measuredHeader !== null && (
+        {!tableType && (
           <FlintChart
             className="chart-interactive"
             spec={spec}
@@ -509,7 +483,7 @@ function GridTile({
   );
 }
 
-/** Keeps each chart object while its content is unchanged, so a poll redraws only the charts that moved. */
+/** Keeps each chart object while its content is unchanged, so a saved change redraws only the charts that moved. */
 function useStableCharts(board: Board): BoardChart[] {
   const cache = useRef(new Map<string, { key: string; chart: BoardChart }>());
   return useMemo(() => {
@@ -526,9 +500,8 @@ function useStableCharts(board: Board): BoardChart[] {
   }, [board]);
 }
 
-function BoardView({ app, initial, hostContext }: { app: App; initial: Board; hostContext?: McpUiHostContext }) {
+export function BoardView({ app, initial, hostContext }: { app: App; initial: Board; hostContext?: McpUiHostContext }) {
   const [board, setBoard] = useState(initial);
-  const [live, setLive] = useState(true);
   // The board's one selection, from the chart the reader selected on last, with the layers that hold it there.
   // The board's one condition, and the chart each part came from, which names its values.
   // A theme picked in the bar shows at once; the board the server returns then carries it.
@@ -553,61 +526,30 @@ function BoardView({ app, initial, hostContext }: { app: App; initial: Board; ho
   chartsRef.current = charts;
   const conditionRef = useRef(condition);
   conditionRef.current = condition;
-  // While the reader arranges the board, the draft is what the card shows; polls wait until they are done.
+  // While the reader arranges the board, the draft is what the card shows.
   const [draft, setDraft] = useState<GridItem[] | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const editingRef = useRef(false);
-  editingRef.current = draft !== null;
 
   useEffect(() => setBoard(initial), [initial]);
 
-  // The card reads the board again while it is on screen; a failed read leaves the last board drawn.
-  useEffect(() => {
-    if (!app.getHostCapabilities()?.serverTools) {
-      setLive(false);
-      return;
-    }
-    let stopped = false;
-    const restoredRef = { current: null as string | null };
-    const poll = async () => {
-      if (stopped || editingRef.current || document.visibilityState !== 'visible') return;
-      try {
-        const result = await app.callServerTool({
-          name: 'read_board',
-          arguments: { board_id: boardRef.current.id, version: boardRef.current.version },
-        });
-        if (stopped || editingRef.current) return;
-        if (result.isError) {
-          // The server lost the board, as after a restart: hand it back under its own id, once.
-          if (restoredRef.current === boardRef.current.id) {
-            setLive(false);
-            return;
-          }
-          restoredRef.current = boardRef.current.id;
-          const restored = await app.callServerTool({ name: 'restore_board', arguments: { board: boardRef.current } });
-          const back = (restored.structuredContent as { board?: Board } | undefined)?.board;
-          if (stopped) return;
-          if (restored.isError || !back) {
-            setLive(false);
-            return;
-          }
-          setLive(true);
-          setBoard(back);
-          return;
-        }
-        setLive(true);
-        const next = (result.structuredContent as { board?: Board } | undefined)?.board;
-        if (next) setBoard(next);
-      } catch {
-        if (!stopped) setLive(false);
+  const [standing, setStanding] = useStanding(app, initial, setBoard);
+
+  /** Saves a reader change on the board; false when the server did not keep it. */
+  const writeBoard = useCallback(async (name: 'set_board_theme' | 'set_board_layout', args: Record<string, unknown>) => {
+    const current = boardRef.current;
+    try {
+      const result = await app.callServerTool({ name, arguments: { id: current.id, version: current.version, ...args } });
+      const { board: saved, version } = (result.structuredContent ?? {}) as { board?: Board; version?: number };
+      if (!result.isError && saved) {
+        setBoard(saved);
+        return true;
       }
-    };
-    const handle = window.setInterval(poll, POLL_MS);
-    return () => {
-      stopped = true;
-      window.clearInterval(handle);
-    };
+      if (version !== undefined && version > current.version) setStanding('passed');
+    } catch {
+      // Not kept; the caller says so.
+    }
+    return false;
   }, [app]);
 
   const clearCondition = useCallback(() => {
@@ -700,7 +642,7 @@ function BoardView({ app, initial, hostContext }: { app: App; initial: Board; ho
   const sendContext = useCallback(() => {
     const current = boardRef.current;
     const lines = [
-      `Board ${current.id}${current.title ? ` "${current.title}"` : ''}: ${current.charts.length} charts, as the reader sees them now. Change it with add_chart, update_chart, remove_chart and update_board.`,
+      `Board ${current.id} version ${current.version}${current.title ? ` "${current.title}"` : ''}: ${current.charts.length} charts, as the reader sees them now. Change it with add_chart, update_chart, remove_chart and update_board, then show it again with show.`,
     ];
     for (const chart of chartsRef.current) {
       const state = states.current.get(chart.id);
@@ -792,35 +734,34 @@ function BoardView({ app, initial, hostContext }: { app: App; initial: Board; ho
   const pickTheme = useCallback(async (next: ChartAssemblyInput['theme_spec']) => {
     const reset = JSON.stringify(next ?? null) === JSON.stringify(boardRef.current.theme_spec ?? null);
     setPendingTheme(reset ? 'reset' : { theme: next ?? null });
-    try {
-      const result = await app.callServerTool({
-        name: 'set_board_theme',
-        arguments: reset ? { board_id: boardRef.current.id, reset: true } : { board_id: boardRef.current.id, theme: next ?? null },
-      });
-      const saved = (result.structuredContent as { board?: Board } | undefined)?.board;
-      if (saved && !result.isError) {
-        setBoard(saved);
-        setPendingTheme(null);
-        return;
-      }
-    } catch {
-      // The pick stays on this card below.
+    if (await writeBoard('set_board_theme', reset ? { reset: true } : { theme: next ?? null })) {
+      setPendingTheme(null);
+      return;
     }
-    // The server did not keep it (one started before set_board_theme, say): the card still shows it.
+    // The server did not keep it: the card still shows it.
     setNotice('The theme could not be saved on the board; it shows here until the card reloads.');
-  }, [app]);
-  const style = useMemo(() => boardStyle(theme), [theme]);
+  }, [writeBoard]);
+  // The frame is drawn in the board's theme, the reader's pick, or else the one theme the charts share.
+  const frameTheme = useMemo(
+    () => (readerTheme !== undefined || theme !== undefined ? theme : sharedChartTheme(charts)),
+    [readerTheme, theme, charts],
+  );
+  const style = useMemo(() => boardStyle(frameTheme), [frameTheme]);
   // The page behind the board takes its paper, so a dark theme has no light edge.
   useEffect(() => {
     document.documentElement.style.background = style.background;
     document.body.style.background = style.background;
   }, [style.background]);
-  // The card is sized to the board, so the page never scrolls. A scrollbar would appear while the host
-  // catches up with a new height, narrow the board, lay every chart out again, and change the height again.
+  // Inline, the card is sized to the board, so the page never scrolls. A scrollbar would appear while the
+  // host catches up with a new height, narrow the board, lay every chart out again, and change the height
+  // again. In a pane the host sets the height, so a taller board scrolls, with its gutter kept so the
+  // scrollbar never narrows it.
+  const paned = hostContext?.displayMode === 'fullscreen' || hostContext?.displayMode === 'pip';
   useEffect(() => {
-    document.documentElement.style.overflow = 'hidden';
-    document.body.style.overflow = 'hidden';
-  }, []);
+    document.documentElement.style.overflow = paned ? 'hidden auto' : 'hidden';
+    document.documentElement.style.scrollbarGutter = paned ? 'stable' : '';
+    document.body.style.overflow = paned ? 'visible' : 'hidden';
+  }, [paned]);
   const byId = useMemo(() => new Map(charts.map((chart) => [chart.id, chart])), [charts]);
 
   const grid = draft ?? board.grid;
@@ -871,23 +812,9 @@ function BoardView({ app, initial, hostContext }: { app: App; initial: Board; ho
   }, [board.grid, gridFromRows]);
 
   const save = useCallback(async (next: GridItem[] | null) => {
-    const current = boardRef.current;
-    try {
-      const result = await app.callServerTool({
-        name: 'set_board_layout',
-        arguments: { board_id: current.id, version: current.version, grid: next },
-      });
-      const saved = (result.structuredContent as { board?: Board } | undefined)?.board;
-      if (result.isError || !saved) {
-        setNotice('The board changed while you arranged it, so your arrangement was not kept.');
-      } else {
-        setBoard(saved);
-      }
-    } catch {
-      setNotice('The arrangement could not be saved.');
-    }
+    if (!(await writeBoard('set_board_layout', { grid: next }))) setNotice('The arrangement was not kept.');
     setDraft(null);
-  }, [app]);
+  }, [writeBoard]);
 
   const gesture = useRef<{ kind: GridGesture; id: string; x: number; y: number; start: GridItem[] } | null>(null);
   const onGesture = useCallback((kind: GridGesture, id: string, event: ReactPointerEvent<HTMLElement>) => {
@@ -957,6 +884,24 @@ function BoardView({ app, initial, hostContext }: { app: App; initial: Board; ho
   };
 
   const boardElement = useRef<HTMLElement | null>(null);
+  // The theme's furniture is drawn once, on the board's frame, as a chart of the theme draws it on its own.
+  const [frameBox, setFrameBox] = useState<FrameBox | undefined>();
+  useLayoutEffect(() => {
+    const next = readFrameBox(boardElement.current);
+    setFrameBox((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+  }, [boardWidth, hostContext?.safeAreaInsets]);
+  const frame = useMemo(() => {
+    if (!frameBox) return undefined;
+    try {
+      return planFrameFurniture(frameTheme as Parameters<typeof planFrameFurniture>[0], frameBox.width - frameBox.left - frameBox.right);
+    } catch {
+      return undefined;
+    }
+  }, [frameTheme, frameBox]);
+  const header = frame?.header;
+  const headerItems = header && frameBox ? headerFurnitureItems(header, frameBox) : [];
+  const topRules = frame?.rules.filter((rule) => rule.edge === 'top') ?? [];
+  const footRules = frame?.rules.filter((rule) => rule.edge === 'bottom') ?? [];
   const exportBoard = useCallback(async () => {
     const root = boardElement.current;
     if (!root) return;
@@ -1024,23 +969,29 @@ function BoardView({ app, initial, hostContext }: { app: App; initial: Board; ho
         '--inset-left': `${hostContext?.safeAreaInsets?.left ?? 0}px`,
       } as CSSProperties}
     >
-      <header className={style.furniture.some((mark) => mark.kind === 'headerRule') ? 'board-header board-header-ruled' : 'board-header'}>
-        {style.furniture.filter((mark) => mark.kind === 'mastheadTab').map((mark, at) => (
-          <span
-            key={at}
-            className="board-tab"
-            style={{ background: mark.color, width: mark.width ?? 44, height: mark.height ?? 12 }}
-          />
-        ))}
-        <div className="board-heading">
+      {headerItems.length > 0 && frameBox && (
+        <svg
+          className="board-furniture"
+          aria-hidden="true"
+          width={frameBox.width}
+          height={Math.max(...headerItems.map((item) => (item.y ?? 0) + item.height))}
+          dangerouslySetInnerHTML={{ __html: canvasFurnitureMarkup(headerItems, frameBox.width) }}
+        />
+      )}
+      <header
+        className={topRules.length ? 'board-header board-header-themed' : 'board-header'}
+        style={header ? { paddingTop: header.edge + header.line } : undefined}
+      >
+        <div className="board-heading" style={header ? { paddingLeft: header.beside.start, paddingRight: header.beside.end } : undefined}>
           <div className="board-heading-text">
             {board.title && <h1 className="board-title">{board.title}</h1>}
             {board.subtitle && <p className="board-subtitle">{board.subtitle}</p>}
           </div>
         </div>
+        {topRules.map((rule, at) => <div key={at} className="board-rule" style={ruleStyle(rule, style.ink)} />)}
         {editing && <p className="board-hint">Drag a chart by its handle at the top right: dropped on a chart in its row the two swap; dropped on another row it is inserted there and the rest move down (Shift does the other). Drag the right or bottom edge, or a bottom corner, to resize.</p>}
         {notice && <p className="board-status">{notice}</p>}
-        {!live && <p className="board-status">Not live: showing the board as it was drawn.</p>}
+        {standing !== 'newest' && <p className="board-status">{STANDING_NOTE[standing]}</p>}
       </header>
       {charts.length === 0 ? (
         <div className="board-empty">No charts on this board yet.</div>
@@ -1102,7 +1053,8 @@ function BoardView({ app, initial, hostContext }: { app: App; initial: Board; ho
           ))}
         </div>
       )}
-      {board.source && <footer className="board-source">{board.source}</footer>}
+      {footRules.map((rule, at) => <div key={at} className="board-rule board-foot-rule" style={ruleStyle(rule, style.ink)} />)}
+      {board.source && <footer className={footRules.length ? 'board-source board-source-ruled' : 'board-source'}>{board.source}</footer>}
       {charts.length > 0 && (
         <div className="optionsbar board-bar" role="toolbar" aria-label="Board options">
           <div className="optionsbar-grid">
@@ -1122,14 +1074,14 @@ function BoardView({ app, initial, hostContext }: { app: App; initial: Board; ho
               </span>
             ) : (
               <span className="bar-actions">
-                <ActionButton label="Edit layout" onClick={startEditing}>
+                <ActionButton label="Edit layout" disabled={standing !== 'newest'} onClick={startEditing}>
                   <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
                     <rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1" fill="none" stroke="currentColor" strokeWidth="1.3" />
                     <rect x="9" y="1.5" width="5.5" height="5.5" rx="1" fill="none" stroke="currentColor" strokeWidth="1.3" />
                     <rect x="1.5" y="9" width="13" height="5.5" rx="1" fill="none" stroke="currentColor" strokeWidth="1.3" />
                   </svg>
                 </ActionButton>
-                <ActionButton label="Reset layout" className="bar-reset" disabled={!board.grid} onClick={() => void save(null)}>
+                <ActionButton label="Reset layout" className="bar-reset" disabled={standing !== 'newest' || !board.grid} onClick={() => void save(null)}>
                   <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
                     <path d="M4 5.5H1.5V3" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
                     <path d="M2 5.5A6 6 0 1 1 2.8 11" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
@@ -1154,105 +1106,4 @@ function BoardView({ app, initial, hostContext }: { app: App; initial: Board; ho
       )}
     </main>
   );
-}
-
-/** How long the card waits for the call's result before it rebuilds the board from the call itself. */
-const RESULT_WAIT_MS = 2500;
-/** How long it waits for anything at all before it says the board cannot be redrawn here. */
-const NOTHING_WAIT_MS = 6000;
-const NOT_REDRAWN =
-  'This board cannot be redrawn here: the call that made it did not reach this card again, as can happen when a conversation is reopened. Ask Claude to show the board again.';
-
-export function BoardApp() {
-  const [board, setBoard] = useState<Board | null>(null);
-  const [failed, setFailed] = useState<string | null>(null);
-  const [hostContext, setHostContext] = useState<McpUiHostContext | undefined>();
-  const toolArgs = useRef<Record<string, unknown> | undefined>(undefined);
-  const resultSeen = useRef(false);
-  const boardSeen = useRef(false);
-  boardSeen.current = board !== null;
-
-  const { app, error } = useApp({
-    appInfo: { name: 'Flint Board', version: __FLINT_MCP_VERSION__ },
-    capabilities: {},
-    autoResize: true,
-    onAppCreated: (app) => {
-      app.onteardown = async () => ({});
-      app.onerror = (err) => console.error(err);
-      app.onhostcontextchanged = (params) => setHostContext((prev) => ({ ...prev, ...params }));
-      app.ontoolinput = (params) => {
-        toolArgs.current = params?.arguments as Record<string, unknown> | undefined;
-      };
-      app.ontoolresult = (result) => {
-        resultSeen.current = true;
-        const { _meta, content } = result as { _meta?: { flint?: { board?: Board } }; content?: { type: string; text?: string }[] };
-        if (result.isError) {
-          setFailed(content?.find((part) => part.type === 'text')?.text ?? '');
-          return;
-        }
-        const next = _meta?.flint?.board;
-        if (next) {
-          setFailed(null);
-          setBoard(next);
-        }
-      };
-    },
-  });
-
-  useEffect(() => {
-    if (app) setHostContext(app.getHostContext());
-  }, [app]);
-
-  // A reopened conversation may not hand the card its result again, or hand it without the board.
-  // The card then asks the server to build the board from the call's own arguments; with nothing to
-  // build from, it says so instead of waiting.
-  useEffect(() => {
-    if (!app) return;
-    let stopped = false;
-    const rebuild = async () => {
-      if (stopped || boardSeen.current) return;
-      const args = toolArgs.current;
-      if (!args || !Array.isArray(args.charts)) {
-        if (resultSeen.current) setFailed(NOT_REDRAWN);
-        return;
-      }
-      try {
-        const result = await app.callServerTool({ name: 'restore_board', arguments: { create: args } });
-        const back = (result.structuredContent as { board?: Board } | undefined)?.board;
-        if (stopped || boardSeen.current) return;
-        if (result.isError || !back) setFailed(NOT_REDRAWN);
-        else setBoard(back);
-      } catch {
-        if (!stopped && !boardSeen.current) setFailed(NOT_REDRAWN);
-      }
-    };
-    const first = window.setTimeout(() => void rebuild(), RESULT_WAIT_MS);
-    const last = window.setTimeout(() => {
-      if (!stopped && !boardSeen.current && !toolArgs.current) setFailed(NOT_REDRAWN);
-    }, NOTHING_WAIT_MS);
-    return () => {
-      stopped = true;
-      window.clearTimeout(first);
-      window.clearTimeout(last);
-    };
-  }, [app]);
-
-  if (error) {
-    return (
-      <div className="status">
-        <strong>App error:</strong> {error.message}
-      </div>
-    );
-  }
-  if (!app) return <div className="status">Connecting…</div>;
-  if (failed !== null) {
-    return (
-      <div className="status">
-        <strong>Board not drawn</strong>
-        {failed && <div className="status-reason">{failed}</div>}
-      </div>
-    );
-  }
-  if (!board) return <div className="status">Waiting for the board…</div>;
-  return <BoardView app={app} initial={board} hostContext={hostContext} />;
 }

@@ -276,6 +276,14 @@ export interface ThemeType {
     axisTitle?: TypeRole;
     valueLabel?: TypeRole;
     keyLabel?: TypeRole;
+    /**
+     * A key's title ("Population (M)"). It names a field as an axis title does, so unset parts follow
+     * `axisTitle`'s family, slope and ink, at the key labels' size; with neither stated, the labels'
+     * family and the secondary text ink. Its weight is bold, or heavier where `axisTitle` is, lighter
+     * only where this role says so: the weight is what tells a title from its entries. Its `case` is
+     * not applied: the title is the field's name as written.
+     */
+    keyTitle?: TypeRole;
     annotation?: TypeRole;
     footnote?: TypeRole;
     /** The line above the headline: a figure label (“FIGURE 2”) or a newsroom kicker, from `chart_spec.label`. */
@@ -473,6 +481,12 @@ export interface ThemeMarks {
          * every line, the dots shrinking to fit; `sparse` — only where readings stand 20px apart or more.
          */
         density?: 'countable' | 'all' | 'sparse';
+        /**
+         * A ring in the plot's surface colour around each dot, so dots that overlap, or sit on a line,
+         * stay countable. A line's dots get one wherever lines can cross unless this says `omit`; a
+         * scatter's dots get one only where it is declared. An `outline` takes its place (a dot has
+         * one stroke). A halo and an opacity below 1 are not combined: ringed dots are solid.
+         */
         halo?: { presence?: Presence; width?: number };
     };
     connector?: {
@@ -612,9 +626,9 @@ export interface ThemeLegend {
      * The air around keys, in em of their labels — so it keeps its proportion to the type — and
      * eased smoothly with the plot's size (0.7 on a small tile to 1.3 on a large chart).
      * `title`: the title block to keys standing under it; `stack`: between keys one above another;
-     * `row`: between keys side by side; `plot`: a key to the plot. Unset: the header grouped by its
-     * gaps — 0.6 em for `stack`, an em for `title`, an em and a half for `row`; an em for `plot`, by
-     * `layout.density`.
+     * `row`: between keys side by side, and keys one above another beside the plot; `plot`: a key to
+     * the plot. Unset: the header grouped by its gaps — 0.6 em for `stack`, an em for `title`, 2.25 em
+     * for `row`; an em for `plot`, by `layout.density`.
      */
     gaps?: { title?: number; stack?: number; row?: number; plot?: number };
     /** The legend restates the categorical axis — delete it. */
@@ -909,13 +923,21 @@ export interface PointGeometry {
     shape?: PointShape;
     /**
      * How opaque a dot is, 0–1. Unset, the renderer's own: Vega-Lite draws a scatter's dots at 0.7
-     * so overlaps show through. A house whose marks are flat planes states 1. A chart's own
+     * so overlaps show through. A house whose marks are flat planes states 1. Dots a full plot shrinks
+     * rise toward solid, holding diameter × opacity. A chart's own
      * `opacity` property still wins.
      */
     opacity?: number;
     /** The ink of a line's vertex dots: `series` (default), `text`, or a colour. */
     ink?: 'series' | 'text' | string;
     outlineWidth?: number;
+    /**
+     * A ring in the plot's colour around each dot, so overlapping dots stay countable. A line's dots
+     * get one wherever lines can cross unless this says `omit`; a scatter's dots only where it is
+     * declared. A quarter of the dot's radius, at most `width`; a scatter's dots under 28px² get
+     * none. An outline takes its place. Not combined with an `opacity` below 1: ringed dots are solid.
+     */
+    halo?: { presence?: Presence; width?: number };
     /**
      * Which lines keep the dots (M5): `countable` (default) — lines of up to 12 readings; `all` —
      * every line, the dots shrinking to fit; `sparse` — only where readings stand 20px apart or more.
@@ -1303,6 +1325,8 @@ export interface ResolvedLegend {
     /** Whether the house titles every key, or only those whose labels do not say what they are. */
     titlePolicy?: 'always' | 'whenAmbiguous';
     label: ResolvedText;
+    /** How a key's title is set: the house's `type.keyTitle`, else the labels' face in bold and the secondary ink. */
+    titleText: ResolvedText;
     gradientLength?: number;
     /** The most entries a key to values may spend. */
     maxSwatches?: number;
@@ -1423,6 +1447,8 @@ export interface ResolvedMarks {
         density: 'countable' | 'all' | 'sparse';
         haloColor?: string;
         haloWidth?: number;
+        /** Set where the house declared a halo: standalone dots (a scatter's) carry it too, not only a line's. */
+        haloDots?: boolean;
     };
     /** The area a sized mark may take, smallest to largest, in px². */
     sizeRange?: [number, number];

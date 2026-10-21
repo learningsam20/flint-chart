@@ -788,6 +788,7 @@ input[type="checkbox"] {
    to the same house as the charts under them. */
 .board {
   --board-rule: color-mix(in srgb, var(--board-muted) 28%, transparent);
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -834,18 +835,12 @@ input[type="checkbox"] {
 
 .board-row {
   display: grid;
-  grid-template-rows: auto auto;
   column-gap: 24px;
 }
 
-/* A cell spans the row's two tracks, heading and chart, so the plots of a row start on one line
-   however many lines a heading takes. */
 .board-cell {
+  position: relative;
   min-width: 0;
-  grid-row: span 2;
-  display: grid;
-  grid-template-rows: subgrid;
-  row-gap: 8px;
 }
 
 .board-row + .board-row:not(.board-row-kpi) .board-cell {
@@ -853,34 +848,31 @@ input[type="checkbox"] {
   border-top: 1px solid var(--board-rule);
 }
 
-.board-tab {
-  display: block;
-  margin-bottom: 8px;
+.board-furniture {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
 }
 
-.board-header-ruled {
-  border-bottom-color: var(--board-ink);
+.board-header.board-header-themed {
+  padding-bottom: 0;
+  border-bottom: none;
 }
 
-.board-cell-header {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.board-rule {
+  flex: none;
+  margin-top: 8px;
 }
 
-.board-cell-title {
-  margin: 0;
-  font-family: var(--board-title-font);
-  font-size: 14px;
-  line-height: 1.25;
-  font-weight: 700;
+.board-foot-rule {
+  margin-top: 0;
 }
 
-.board-cell-subtitle {
-  margin: 0;
-  color: var(--board-muted);
-  font-size: 12px;
-  line-height: 1.35;
+.board-source.board-source-ruled {
+  padding-top: 0;
+  border-top: none;
 }
 
 .board-cell-chart {
@@ -1022,10 +1014,6 @@ input[type="checkbox"] {
   pointer-events: none;
 }
 
-.board-editing .board-tile-header {
-  user-select: none;
-}
-
 .board-tile-handle {
   position: absolute;
   top: 0;
@@ -1061,11 +1049,6 @@ input[type="checkbox"] {
 .board-tile-active .board-tile-handle {
   cursor: grabbing;
   color: var(--board-ink);
-}
-
-.board-tile-grip {
-  color: var(--board-muted);
-  font-size: 12px;
 }
 
 .board-tile-edge,
@@ -1119,7 +1102,7 @@ input[type="checkbox"] {
   min-width: 0;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   overflow: hidden;
 }
 
@@ -1128,9 +1111,9 @@ input[type="checkbox"] {
   min-width: 0;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   height: 22px;
-  padding: 0 2px 0 8px;
+  padding: 0 10px;
   border: 1px solid var(--board-rule, var(--hairline));
   border-radius: 999px;
   font-size: 11.5px;
@@ -1145,9 +1128,12 @@ input[type="checkbox"] {
   text-overflow: ellipsis;
 }
 
+.board-chip-removable {
+  padding-right: 3px;
+}
+
 .board-chip-more {
   flex: none;
-  padding: 0 8px;
   color: var(--board-muted, var(--muted));
 }
 
@@ -1245,14 +1231,10 @@ input[type="checkbox"] {
   max-height: var(--chart-max-height);
 }
 
-/* The switch sits at the end of a board cell's heading, shown on hover or focus and while on. */
-.board-cell-header {
-  position: relative;
-}
-
+/* The switch floats over the chart's top end, shown on hover or focus and while on. */
 .board-view-switch {
   position: absolute;
-  top: -2px;
+  top: 0;
   right: 0;
   z-index: 2;
   opacity: 0;
@@ -1266,6 +1248,3 @@ input[type="checkbox"] {
   opacity: 1;
 }
 
-.board-cell-header:has(.board-view-switch) {
-  padding-right: 26px;
-}

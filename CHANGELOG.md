@@ -11,10 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Target release: **1.0.0** for `flint-chart`, `flint-chart-mcp`, and the Copilot
-Canvas plugin. This release has not been published.
-Planned work is tracked in the [1.0 working plan](.github/release-notes/1.0.0-todo.md);
-the entries below describe implemented changes, not the remaining checklist.
+## [1.0.0] - 2026-10-19
+
+Released together for `flint-chart`, `flint-chart-mcp`, and the Copilot Canvas plugin.
 
 ### Added
 
@@ -114,8 +113,27 @@ the entries below describe implemented changes, not the remaining checklist.
   navigation preset writes, for hosts that set the same state.
 - `ChartState.annotations` lists reader-made annotations, so a host can
   persist them.
+- `strokeDash` on the ECharts Line Chart, as on the Vega-Lite, Plotly, and
+  Excel line charts. A colour value draws one line per dash value, all in its
+  palette colour, and its one legend entry toggles them all; the dash styles
+  (solid, dashed, dotted, dash-dot) follow the dash values' first appearance
+  in the data, so facet panels agree. The legend lists the colour values, then
+  a gray line sample per dash value, and the axis tooltip names each line by
+  both (`C1 · Limit: 8`). Without colour the lines share one colour under a
+  legend titled by the dash field; with a continuous colour the gray line
+  splits by dash value.
 
 ### Changed
+
+- **Breaking (MCP):** charts and boards are built off screen and drawn by one
+  tool. `create_chart` and `create_board` return a report and an id;
+  `update_chart`, `add_chart`, `remove_chart` and `update_board` change it by
+  `id` (was `board_id`); `show` opens the one card a turn with the current
+  version, and earlier cards keep the version they showed. `create_chart_view`,
+  `restore_chart_view`, `show_board` and `read_board` are removed, and the UI
+  resource is `ui://flint-chart/view.html`. Charts now live in server memory
+  between calls, as boards did, so a scaled HTTP deployment needs one instance
+  or sticky sessions.
 
 - `onChange` fires only when the chart's state changes, not after every
   render. A `ChartChange` now carries `source` (`reader` for a gesture, `host`
@@ -482,7 +500,8 @@ the entries below describe implemented changes, not the remaining checklist.
 - Treated only lowercase `start` and `end` Waterfall Type values as total
   anchors in Vega-Lite; other values now remain floating deltas colored by sign.
 
-[Unreleased]: https://github.com/microsoft/flint-chart/compare/0.5.1...HEAD
+[Unreleased]: https://github.com/microsoft/flint-chart/compare/1.0.0...HEAD
+[1.0.0]: https://github.com/microsoft/flint-chart/compare/0.5.1...1.0.0
 [0.5.1]: https://github.com/microsoft/flint-chart/compare/0.5...0.5.1
 [0.5.0]: https://github.com/microsoft/flint-chart/compare/0.4.0...0.5.0
 [0.4.1]: https://github.com/microsoft/flint-chart/compare/0.4.0...0.4.1

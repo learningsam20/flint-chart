@@ -46,12 +46,12 @@ import {
     readableTextInk,
     isDarkSurface,
     isPaintedSurface,
-    luminance,
     mixHex,
     parseColor,
     presenceWidth,
     resolvePresenceInk,
     sampleRamp,
+    sampleRampBins,
 } from './presence.js';
 import { resolveDisplayUnit } from '../field-semantics.js';
 import { getRegistryEntry, isRegistered } from '../type-registry.js';
@@ -64,7 +64,6 @@ import { deepMerge } from './merge.js';
 import { overflowStaysFlat, resolveLabelOverflow } from '../axis-labels.js';
 import { sequenceKindOf } from '../label-sequence.js';
 import type { TextMeasurer } from '../legend-layout.js';
-import { tableTextMeasurer } from '../text-width.js';
 import { axisRoles, type AxisFieldFacts } from '../axis-roles.js';
 import { boundValueInks, chartValueColors } from '../value-colors.js';
 import { LABEL_GAP, LABEL_INSET, LABEL_SIDE, LINE_SLACK, measureValueLabels } from '../value-label-measure.js';
@@ -528,6 +527,7 @@ export function geometryToMarks(
         if (point.opacity !== undefined) resolved.opacity = point.opacity;
         if (point.ink !== undefined) resolved.ink = point.ink;
         if (point.density !== undefined) resolved.density = point.density;
+        if (point.halo !== undefined) resolved.halo = { ...(resolved.halo ?? {}), ...point.halo };
         if (Object.keys(resolved).length) marks.point = resolved;
     }
 
@@ -938,6 +938,22 @@ export function groundTheme(themeIn: ThemeSpec, ctx: GroundingContext): DesignDe
     const deck = resolveType(theme.type?.deck, 11, text.secondary);
     const valueLabel = resolveType(theme.type?.valueLabel, 10, text.primary);
     const keyLabel = resolveType(theme.type?.keyLabel, 10, text.secondary);
+    // A key's title names a field, as an axis title does: it is set as the house sets those, at its
+    // labels' size, unless the house sets key titles apart.
+    const axisTitleRole = theme.type?.axisTitle;
+    const keyTitleRole = theme.type?.keyTitle;
+    const keyTitle: ResolvedText = {
+        ...resolveType({
+            family: axisTitleRole?.family ?? theme.type?.keyLabel?.family,
+            size: theme.type?.keyLabel?.size,
+            ...(axisTitleRole?.style ? { style: axisTitleRole.style } : {}),
+            ...(axisTitleRole?.color ? { color: axisTitleRole.color } : {}),
+            ...keyTitleRole,
+        }, 10, text.secondary),
+        // Never lighter than bold unless the house says so of key titles: the weight is what tells a
+        // title from the entries under it, set in the same face, size and often ink.
+        fontWeight: fontWeightOf(keyTitleRole?.weight) ?? Math.max(fontWeightOf(axisTitleRole?.weight) ?? 700, 700),
+    };
     // Roles read only where Flint draws their text: a statistic's note, a KPI's big number.
     const annotationText = theme.type?.annotation ? resolveType(theme.type.annotation, 10, text.secondary) : undefined;
     const displayText = theme.type?.display ? resolveType(theme.type.display, 28, text.primary) : undefined;
@@ -1064,7 +1080,9 @@ export function groundTheme(themeIn: ThemeSpec, ctx: GroundingContext): DesignDe
     const truncation = theme.labels?.truncation ?? 'ellipsis';
     // A sequence along x (times, dates, years, ranks) may thin its names to round values; names may not.
     const xSequence = sequenceKindOf(ctx.channelSemantics?.x?.semanticAnnotation?.semanticType) !== undefined;
-    const labelOverflow = resolveLabelOverflow(theme.labels, ctx.labelOverflow, xSequence ? 'sequence' : 'names');
+    // Dates read as snapshots are each a separate observation: every one keeps its name.
+    const labelOverflow = resolveLabelOverflow(theme.labels, ctx.labelOverflow, xSequence ? 'sequence' : 'names')
+        .filter((step) => !(ctx.channelSemantics?.x?.snapshots && step === 'skip'));
     const labelFlush = theme.labels?.flush === true;
     const axisTitlesPolicy = theme.annotation?.axisTitles ?? 'whenAmbiguous';
 
@@ -1156,9 +1174,10 @@ export function groundTheme(themeIn: ThemeSpec, ctx: GroundingContext): DesignDe
         // of that distance and the padding covers the rest; where the house
         // draws none — or turns them inward — the padding is the whole distance,
         // and 4px leaves the label sitting against the edge of the plot.
-        // A flush house sets its labels close: 2px past the plot, or past the tick where one is drawn.
+        // A flush house sets its labels close: 4px past the plot, or past the tick where one is drawn.
+        // Closer, a label reads as touching a drawn axis rule.
         const tickOut = ticksRule.show && !inward ? tickLen : 0;
-        const defaultLabelGap = labelFlush ? 2 + tickOut : 4 + tickLen;
+        const defaultLabelGap = labelFlush ? 4 + tickOut : 4 + tickLen;
         const ruleToLabelGap = spec?.labelGap ?? defaultLabelGap;
         const labelPadding = ticksRule.show && !inward
             ? Math.max(0, ruleToLabelGap - tickLen)
@@ -1892,6 +1911,9 @@ export function groundTheme(themeIn: ThemeSpec, ctx: GroundingContext): DesignDe
                 density: marksSpec.point?.density ?? 'countable',
                 haloColor: halo ? plot : undefined,
                 haloWidth: marksSpec.point?.halo?.width ?? (halo ? 1.5 : undefined),
+                // A line's dots take the halo wherever lines can cross; a scatter's only where the
+                // house asked for one, since most houses print their dots without a ring.
+                ...(haloDeclared && halo ? { haloDots: true } : {}),
             }
             : undefined,
         separator,
@@ -2066,6 +2088,7 @@ export function groundTheme(themeIn: ThemeSpec, ctx: GroundingContext): DesignDe
             title: legendTitle,
             titlePolicy,
             label: keyLabel,
+            titleText: keyTitle,
             gradientLength: legendSpec.gradientLength,
             maxSwatches: legendSpec.maxSwatches,
             ...(legendSpec.swatch && legendSpec.swatch !== 'auto' ? { swatch: legendSpec.swatch } : {}),
@@ -2259,8 +2282,12 @@ function groundSeriesInkChoice(
     signals: Signals,
     say: ReportDeparture,
 ): ResolvedSeriesInk {
-    const s = forMarkFamily(theme.ink?.series ?? {}, seriesMarkFamily(ctx.markTypes));
+    const family = seriesMarkFamily(ctx.markTypes);
+    const s = forMarkFamily(theme.ink?.series ?? {}, family);
     const selection = s.selection ?? {};
+    // A colour taken from a ramp's bins stands this far off the surface: thin lines and points
+    // further than filled marks.
+    const binContrast = family === 'line' || family === 'point' ? LINE_BIN_CONTRAST : FILL_BIN_CONTRAST;
     // An ink bound to a value present in this chart is that value's alone: the positional sets skip
     // it. Inks bound to values the chart does not hold stay in the palette, so a house that binds its
     // whole palette to one vocabulary still has it for every other chart.
@@ -2344,12 +2371,14 @@ function groundSeriesInkChoice(
         if (ramp?.stops?.length) {
             const consumption = ramp.consumption ?? 'interpolate';
             const quantize = consumption === 'quantize' ? (ramp.quantizeCount ?? 5) : undefined;
+            // A diverging ramp keeps its ends: its pale colour is the midpoint, not an end to trim.
+            const bins = quantize && !diverging ? sampleRampBins(ramp.stops, quantize, surfaceColour, binContrast) : undefined;
             return {
                 ...base,
                 mode: diverging ? 'diverging' : 'sequential',
                 ramp,
                 quantize,
-                range: quantize ? sampleRamp(ramp.stops, quantize) : ramp.stops.slice(),
+                range: bins ?? (quantize ? sampleRamp(ramp.stops, quantize) : ramp.stops.slice()),
             };
         }
         // An indexed set is never the right answer for a continuous field: it
@@ -2415,11 +2444,16 @@ function groundSeriesInkChoice(
         const ramp: Ramp | undefined = offSurface(
             s.ordinal?.stops?.length ? s.ordinal : s.sequential?.stops?.length ? s.sequential : s.diverging, surfaceColour);
         if (ramp?.stops?.length && signals.seriesCountKnown) {
+            // A house's own ordinal ramp names its steps as written. A measure's ramp lent to the
+            // steps gives each the middle of its bin, the faint end trimmed: the first of two years
+            // is a readable tint, not the ramp's near-white.
             return {
                 ...base,
                 mode: 'sequential',
                 ramp,
-                range: sampleRamp(ramp.stops, Math.max(2, count)),
+                range: s.ordinal?.stops?.length
+                    ? sampleRamp(ramp.stops, Math.max(2, count))
+                    : sampleRampBins(ramp.stops, Math.max(2, count), surfaceColour, binContrast),
             };
         }
     }
@@ -2486,6 +2520,10 @@ const MARK_FAMILY: Record<string, SeriesMarkFamily> = {
  * The one family of marks that draws this chart's series, if there is one. Text and rules annotate;
  * dots on a line belong to the line. Two families (bars with a line) have none.
  */
+/** The contrast off the surface a ramp's bin colours keep, for filled marks and for lines and points. */
+const FILL_BIN_CONTRAST = 1.5;
+const LINE_BIN_CONTRAST = 2.5;
+
 function seriesMarkFamily(markTypes: string[]): SeriesMarkFamily | undefined {
     const families = new Set(markTypes.map((m) => MARK_FAMILY[m]).filter(Boolean));
     if (families.has('line')) families.delete('point');

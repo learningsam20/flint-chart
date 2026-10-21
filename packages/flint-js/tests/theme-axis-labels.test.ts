@@ -3,10 +3,14 @@
 
 import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import { compile } from 'vega-lite';
-import { parse, textMetrics, View } from 'vega';
+import * as vega from 'vega';
+import { parse, View } from 'vega';
 import { assembleVegaLite } from '../src';
 import { TEST_GENERATORS } from '../src/test-data';
 import { tableTextMeasurer } from '../src/core/text-width';
+
+/** vega re-exports vega-scenegraph's `textMetrics` at runtime, but vega's typings omit it. */
+const { textMetrics } = vega as unknown as { textMetrics: { width: (item: any, text?: any) => number } };
 
 /**
  * Vega drops a tick label only once its box *overlaps* its neighbour's. Two
@@ -144,8 +148,8 @@ describe('Pop axis label clearance', () => {
             const axis = pop.config[channel];
             expect(axis.domainWidth).toBe(4.5);
             expect(axis.labelPadding + Math.max(0, axis.tickSize + (axis.tickOffset ?? 0))).toBe(7);
-            // Swiss sets its labels flush: 2px past the plot, or past the tick on its ticked measure axis.
-            expect(swiss.config[channel].labelPadding).toBe(2);
+            // Swiss sets its labels flush: 4px past the plot, or past the tick on its ticked measure axis.
+            expect(swiss.config[channel].labelPadding).toBe(4);
         }
     });
 });
@@ -281,7 +285,7 @@ describe('temporal axis year context', () => {
                 data: { values },
                 semantic_types: { Date: 'Date', Value: 'Quantity' },
                 chart_spec: {
-                    chartType: 'Bar Chart', encodings: { x: 'Date', y: 'Value' },
+                    chartType: 'Bar Chart', encodings: { x: { field: 'Date', type: 'temporal' }, y: 'Value' },
                     baseSize: { width, height: 300 },
                 },
                 theme_spec: theme,
@@ -312,7 +316,7 @@ describe('temporal axis year context', () => {
         const spec: any = assembleVegaLite({
             data: { values: [{ date: '2022-03-01', value: 10 }, { date: '2022-09-01', value: 20 }] },
             semantic_types: { date: 'Date', value: 'Quantity' },
-            chart_spec: { chartType: 'Bar Chart', encodings: { x: 'date', y: 'value' } },
+            chart_spec: { chartType: 'Bar Chart', encodings: { x: { field: 'date', type: 'temporal' }, y: 'value' } },
             theme_spec: 'datawrapper',
         });
         const view = new View(parse(compile(spec).spec), { renderer: 'none' });

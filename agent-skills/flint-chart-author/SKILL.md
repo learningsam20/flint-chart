@@ -43,19 +43,22 @@ First decide which workflow the user is asking for:
   `semantic_types` + `chart_spec` pieces. Do not install packages or write
   renderer code unless asked.
 - **MCP chart output:** if Flint MCP tools are available, **default to
-  `create_chart_view`** whenever the user asks to see a chart — it opens an
-  interactive, live-rendered view with a customization panel, and it validates
-  the spec for you. Only fall back to `render_chart` (PNG/SVG) when the host has
+  `create_chart` then `show`** whenever the user asks to see a chart.
+  `create_chart` checks the spec and returns a report and the chart's id
+  without drawing; fix what the report asks with `update_chart`, then call
+  `show` once, which opens an interactive, live-rendered card with a
+  customization panel. Only fall back to `render_chart` (PNG/SVG) when the host has
   no App UI support or the user explicitly wants a static image. Use
   `validate_chart` to check a spec without rendering, `compile_chart` when the
   user wants backend-native JSON, and `list_chart_types` when you need the
   supported chart catalog.
-- **DO** pass `updates` beside the input to `create_chart_view` when the user
+- **DO** pass `updates` beside the input to `create_chart` when the user
   asks the chart to open in a state: rows to stand out, a note on a mark, a
   framed range. It is a list of ChartUpdate layers, state not behaviour; the
-  shapes are in `flint://interaction-skill` under "Update the chart". To change an
-  open chart, call `create_chart_view` again with the same input and new `updates`.
-- **DO** pass `view: "table"` to `create_chart_view` when the user wants to see
+  shapes are in `flint://interaction-skill` under "Update the chart". To change a
+  chart in a later turn, call `update_chart` with its id and new `updates`, then
+  `show` again: a new card shows the new version, earlier cards stay as they were.
+- **DO** pass `view: "table"` to `create_chart` when the user wants to see
   a chart's numbers: the card opens on the table of the rows the chart draws,
   and the reader can switch to the chart. When the user wants records listed and
   no chart at all, use `chartType: "Table"` instead.
@@ -283,7 +286,7 @@ many series keep the requested brand palette.
 
 Do not copy an entire preset or invent theme keys. A theme controls
 presentation; fields, aggregation, filtering, and sorting still belong in the
-chart input. ThemeSpec currently affects Vega-Lite only.
+chart input. ThemeSpec applies to Vega-Lite and Plotly; ECharts, Chart.js, and Excel ignore it.
 
 Full reference:
 https://microsoft.github.io/flint-chart/#/documentation/theme-spec
@@ -574,6 +577,30 @@ understates what you know:
   `PercentageChange`) read as higher-is-better on their own; set
   `"lower-is-better"` for costs, errors, churn or delays, so their highs, not
   their lows, take the warm end, under any theme.
+
+## Step 4 — write the spec
+
+Put the three steps into one `ChartAssemblyInput`, with the data bound as in
+"How data gets bound" and a headline as in "Write a headline":
+
+```json
+{
+  "data": { "url": "sales.csv" },
+  "semantic_types": { "month": "YearMonth", "revenue": "Amount", "region": "Region" },
+  "chart_spec": {
+    "chartType": "Line Chart",
+    "title": "Europe climbed every month after the April dip",
+    "subtitle": "Revenue by region, $m",
+    "encodings": { "x": { "field": "month" }, "y": { "field": "revenue" }, "color": { "field": "region" } }
+  },
+  "theme_spec": "economist"
+}
+```
+
+Add `theme_spec`, `chartProperties`, `interaction_spec` or `updates` only when
+the request asks for them. With the MCP tools, send it to `create_chart`
+directly (it validates; skip `validate_chart`), fix what the report asks with
+`update_chart`, then `show`. Without them, run the "Validation checklist".
 
 ## Chart-level properties (`chartProperties`)
 

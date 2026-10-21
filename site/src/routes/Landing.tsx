@@ -6,7 +6,7 @@ import { TEST_GENERATORS, makeField, makeEncodingItem, buildMetadata, type TestC
 import { INTERACTION_PRESET_TYPES, THEME_PRESETS, type ChartAssemblyInput, type InteractionSpec } from 'flint-chart';
 import { FlintChart } from 'flint-chart/react';
 import type { ChartChange } from 'flint-chart/interactive';
-import { SiteNavBar, MicrosoftDisclosures, GitHubIcon } from '../components/SiteShell';
+import { SiteNavBar, MicrosoftDisclosures, GitHubIcon, DiscordIcon } from '../components/SiteShell';
 import { WallChart } from '../components/WallChart';
 import { ScaleToFit } from '../components/ScaleToFit';
 import { GalleryOptionsBar, ThemeControl } from '../components/GalleryOptionsBar';
@@ -28,7 +28,7 @@ import {
   getSupportedBackends,
   type PreviewBackend,
 } from '../shared/supported-backends';
-import { GITHUB_REPO, LANDING_SCROLL_TO_KEY, WECHAT_SECTION_ID, siteTheme } from '../shared/theme';
+import { DISCORD_INVITE, GITHUB_REPO, LANDING_SCROLL_TO_KEY, WECHAT_SECTION_ID, siteTheme } from '../shared/theme';
 import { scrollToHeading } from '../shared/scroll-to-heading';
 import flintLogo from '../assets/flint-logo.svg';
 import wechatQr from '../../../docs/figs/QR-code.png';
@@ -227,15 +227,29 @@ export function Landing() {
           <h2 style={newsHeadingStyle}>{t('landing.news.title')}</h2>
           <div style={newsListStyle}>
             {([
-              { key: 'release100', to: '/interactions', linkLabel: 'Interactive' },
+              { key: 'release100', to: '/interactions', linkLabel: 'Interactive', video: 'https://youtu.be/JAJy7ToczMs' },
               { key: 'release051', href: `${GITHUB_REPO}/blob/main/CHANGELOG.md`, linkLabel: 'Changelog' },
               { key: 'release050', href: `${GITHUB_REPO}/releases/tag/0.5.0`, linkLabel: 'v0.5.0' },
-            ] as { key: string; href?: string; to?: string; linkLabel: string }[]).map((update) => (
+            ] as { key: string; href?: string; to?: string; linkLabel: string; video?: string }[]).map((update) => (
               <article className="landing-news-item" style={newsItemStyle} key={update.key}>
                 <time style={newsDateStyle} dateTime={t(`landing.news.${update.key}.dateTime`)}>
                   {t(`landing.news.${update.key}.date`)}
                 </time>
                 <p style={newsTextStyle}>{t(`landing.news.${update.key}.text`)}</p>
+                <span style={newsLinksStyle}>
+                {update.video && (
+                  <a
+                    className="site-text-link"
+                    style={{ ...newsLinkStyle, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                    href={update.video}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={t('landing.news.watchVideo')}
+                  >
+                    <YouTubeIcon />
+                    {t('landing.news.video')}
+                  </a>
+                )}
                 {update.to && (
                   <LocaleLink className="site-text-link" style={newsLinkStyle} to={update.to}>
                     {update.linkLabel}
@@ -252,6 +266,7 @@ export function Landing() {
                     {update.linkLabel}
                   </a>
                 )}
+                </span>
               </article>
             ))}
           </div>
@@ -321,23 +336,42 @@ export function Landing() {
           </div>
         </section>
 
-        {/* ---- WeChat community -------------------------------------- */}
+        {/* ---- Community: WeChat and Discord, side by side ------------- */}
         <section
-          id={WECHAT_SECTION_ID}
-          style={{ ...sectionStyle, paddingTop: 20, paddingBottom: 72, textAlign: 'center' }}
+          style={{
+            ...sectionStyle,
+            paddingTop: 20,
+            paddingBottom: 72,
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 300px), 1fr))',
+            gap: 48,
+            alignItems: 'start',
+            textAlign: 'center',
+          }}
         >
-          <h2 style={{ fontSize: 22, margin: '0 0 10px', fontWeight: 500 }}>
-            {t('landing.wechatTitle')}
-          </h2>
-          <p style={{ margin: '0 0 24px', color: siteTheme.text, fontSize: 15, lineHeight: 1.6 }}>
-            {t('landing.wechatBody')}
-          </p>
-          <img
-            src={wechatQr}
-            alt={t('landing.wechatAlt')}
-            width={220}
-            style={{ display: 'block', margin: '0 auto', maxWidth: '100%', height: 'auto' }}
-          />
+          <div id={WECHAT_SECTION_ID}>
+            <h2 style={communityTitleStyle}>{t('landing.wechatTitle')}</h2>
+            <p style={communityBodyStyle}>{t('landing.wechatBody')}</p>
+            <img
+              src={wechatQr}
+              alt={t('landing.wechatAlt')}
+              width={180}
+              style={{ display: 'block', margin: '0 auto', maxWidth: '100%', height: 'auto' }}
+            />
+          </div>
+          <div>
+            <h2 style={communityTitleStyle}>{t('landing.discordTitle')}</h2>
+            <p style={communityBodyStyle}>{t('landing.discordBody')}</p>
+            <a
+              href={DISCORD_INVITE}
+              target="_blank"
+              rel="noreferrer"
+              style={{ ...secondaryBtn, display: 'inline-flex', alignItems: 'center', gap: 8 }}
+            >
+              <DiscordIcon size={17} />
+              {t('landing.discordCta')}
+            </a>
+          </div>
         </section>
       </main>
       <MicrosoftDisclosures />
@@ -1781,7 +1815,7 @@ const newsListStyle: CSSProperties = {
 
 const newsItemStyle: CSSProperties = {
   display: 'grid',
-  gridTemplateColumns: '112px minmax(0, 1fr) 72px',
+  gridTemplateColumns: '112px minmax(0, 1fr) auto',
   gap: 16,
   padding: '2px 0',
 };
@@ -1798,6 +1832,24 @@ const newsTextStyle: CSSProperties = {
   color: siteTheme.text,
   fontSize: 13.5,
   lineHeight: 1.55,
+};
+
+/** YouTube's play mark, in its own red. */
+function YouTubeIcon() {
+  return (
+    <svg viewBox="0 0 24 17" width={17} height={12} aria-hidden="true" focusable="false">
+      <path fill="#ff0000" d="M23.5 2.65A3 3 0 0 0 21.4.53C19.5 0 12 0 12 0S4.5 0 2.6.53A3 3 0 0 0 .5 2.65C0 4.55 0 8.5 0 8.5s0 3.95.5 5.85a3 3 0 0 0 2.1 2.12C4.5 17 12 17 12 17s7.5 0 9.4-.53a3 3 0 0 0 2.1-2.12c.5-1.9.5-5.85.5-5.85s0-3.95-.5-5.85Z" />
+      <path fill="#fff" d="M9.6 12.14 15.86 8.5 9.6 4.86z" />
+    </svg>
+  );
+}
+
+const newsLinksStyle: CSSProperties = {
+  display: 'inline-flex',
+  justifyContent: 'flex-end',
+  alignItems: 'baseline',
+  gap: 12,
+  minWidth: 72,
 };
 
 const newsLinkStyle: CSSProperties = {
@@ -2825,6 +2877,9 @@ const codeStyle: CSSProperties = {
   fontSize: '0.9em',
   fontFamily: siteTheme.fontMono,
 };
+
+const communityTitleStyle: CSSProperties = { fontSize: 22, margin: '0 0 10px', fontWeight: 500 };
+const communityBodyStyle: CSSProperties = { margin: '0 auto 24px', maxWidth: 380, color: siteTheme.text, fontSize: 15, lineHeight: 1.6 };
 
 const primaryBtn: CSSProperties = {
   display: 'inline-block',

@@ -24,6 +24,8 @@
  * file and rasterises identically in any standalone SVG renderer.
  */
 
+import type { HeaderPlan } from '../core/header-plan';
+
 /**
  * A piece of furniture drawn on the canvas, placed against the canvas's own edges so it holds
  * whatever width the chart renders at: `left` and/or `right` (px from those edges; both stretch it
@@ -57,6 +59,32 @@ export interface CanvasFurnitureItem {
     href?: string;
     /** Centred between `left` and `right` rather than run between them. */
     center?: boolean;
+}
+
+/**
+ * The header a plan laid out (see core/header-plan.ts) as canvas items, on a canvas whose margin is
+ * `margin`: the edge band hangs from the canvas top, the line above the headline and the pieces beside
+ * it start below the margin, and a `content` piece is measured from inside the margin.
+ */
+export function headerFurnitureItems(header: HeaderPlan, margin: { left: number; right: number; top: number }): CanvasFurnitureItem[] {
+    const room = header.edge + header.line;
+    const zoneTop = { canvasTop: 0, aboveTitle: header.edge + margin.top, besideTitle: room + margin.top };
+    return header.pieces.map((p) => {
+        const start = p.frame === 'canvas' ? 0 : margin.left;
+        const end = p.frame === 'canvas' ? 0 : margin.right;
+        const across = p.align === 'span' ? { left: start, right: end }
+            : p.align === 'middle' ? { left: start, right: end, center: true }
+                : p.align === 'start' ? { left: start + p.offset } : { right: end + p.offset };
+        return {
+            kind: p.kind, ...across, y: zoneTop[p.zone] + p.dy, height: p.height,
+            ...(p.align !== 'span' && p.width != null && p.kind !== 'text' ? { width: p.width } : {}),
+            ...(p.align === 'middle' && p.kind !== 'text' && p.width != null ? { width: p.width } : {}),
+            ...(p.color ? { color: p.color } : {}),
+            ...(p.text !== undefined ? { text: p.text, fontSize: p.fontSize, ...(p.font ? { font: p.font } : {}), ...(p.fontWeight != null ? { fontWeight: p.fontWeight } : {}), ...(p.fontStyle ? { fontStyle: p.fontStyle } : {}) } : {}),
+            ...(p.src ? { src: p.src, ...(p.alt ? { alt: p.alt } : {}) } : {}),
+            ...(p.href ? { href: p.href } : {}),
+        };
+    });
 }
 
 /**
@@ -185,13 +213,18 @@ export function appendCanvasFurniture(svg: SVGSVGElement, items: CanvasFurniture
 export function injectCanvasFurnitureSVG(svg: string, items: CanvasFurnitureItem[], patterns: CanvasPattern[] = []): string {
     if (!items?.length && !patterns?.length) return svg;
     let out = svg;
-    if (patterns.length) {
-        const open = /<svg[^>]*>/.exec(out);
-        if (open) out = out.slice(0, open.index + open[0].length) + canvasPatternDefs(patterns) + out.slice(open.index + open[0].length);
-    }
+    const open = rootSvgTag(out);
+    if (patterns.length && open) out = out.slice(0, open.end) + canvasPatternDefs(patterns) + out.slice(open.end);
     const idx = out.lastIndexOf('</svg>');
     if (idx === -1 || !items?.length) return out;
-    const width = Number(/<svg[^>]*\swidth="([\d.]+)"/.exec(out)?.[1] ?? 0);
-    const height = Number(/<svg[^>]*\sheight="([\d.]+)"/.exec(out)?.[1] ?? 0);
+    const width = Number(open && /\swidth="([\d.]+)"/.exec(open.tag)?.[1] || 0);
+    const height = Number(open && /\sheight="([\d.]+)"/.exec(open.tag)?.[1] || 0);
     return out.slice(0, idx) + canvasFurnitureMarkup(items, width, [], height) + out.slice(idx);
+}
+
+/** The root `<svg …>` tag, found by index rather than a pattern that rescans the markup from every `<svg`. */
+function rootSvgTag(svg: string): { tag: string; end: number } | undefined {
+    const start = svg.indexOf('<svg');
+    const close = start === -1 ? -1 : svg.indexOf('>', start);
+    return close === -1 ? undefined : { tag: svg.slice(start, close + 1), end: close + 1 };
 }
