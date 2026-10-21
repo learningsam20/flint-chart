@@ -4,6 +4,7 @@ import { FlintChart } from 'flint-chart/react';
 import { ScaleToFit } from '../components/ScaleToFit';
 import { VegaLiteView } from '../components/VegaLiteView';
 import { SKETCHES } from './sketches';
+import { C, ellipse } from './sketch';
 import minimaps from './specs/minimaps.json';
 
 /** A live Flint chart laid out for its box: the compiler sizes it to the room, nothing spills. */
@@ -23,6 +24,80 @@ export function VegaLite({ spec }: { spec: unknown }) {
         <VegaLiteView spec={spec} renderer="svg" />
       </ScaleToFit>
     </div>
+  );
+}
+
+export type Flaw = { role: 'x-axis' | 'y-axis' | 'legend' | 'marks'; label: string };
+
+/**
+ * A Vega-Lite chart with its problems circled in red, hand-drawn over the parts Vega names (an axis,
+ * the legend, the marks), each with a short label. The rings follow the chart as it scales.
+ */
+export function FlawedVegaLite({ spec, flaws }: { spec: unknown; flaws: Flaw[] }) {
+  // Each ring carries its number; the labels are listed as text beside the chart (see FlawList).
+  const host = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const el = host.current, canvas = canvasRef.current;
+    if (!el || !canvas) return;
+    let ready = false;
+    const draw = () => {
+      const svg = el.querySelector('svg.marks, svg');
+      const w = el.clientWidth, h = el.clientHeight;
+      if (!ready || !svg || !w || !h) return;
+      const hb = el.getBoundingClientRect(), k = hb.width / w || 1;
+      const dpr = Math.max(2, window.devicePixelRatio * 1.5);
+      canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+      const ctx = canvas.getContext('2d')!;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+      const axes = [...svg.querySelectorAll('.role-axis')].map((g) => g.getBoundingClientRect());
+      const pick = (role: Flaw['role']): DOMRect | undefined => {
+        if (role === 'legend') return svg.querySelector('.role-legend')?.getBoundingClientRect();
+        if (role === 'marks') return svg.querySelector('.role-mark')?.getBoundingClientRect();
+        // The x axis is the wide one, the y axis the tall one.
+        const sorted = [...axes].sort((a, b) => (role === 'x-axis' ? b.width / b.height - a.width / a.height : b.height / b.width - a.height / a.width));
+        return sorted[0];
+      };
+      flaws.forEach((flaw, i) => {
+        const r = pick(flaw.role);
+        if (!r) return;
+        const x = (r.left - hb.left) / k, y = (r.top - hb.top) / k, bw = r.width / k, bh = r.height / k;
+        const cx = x + bw / 2, cy = y + bh / 2;
+        ellipse(ctx, cx, cy, bw / 2 + 12, bh / 2 + 10, { w: 3, color: C.red, seed: 3000 + i * 7 });
+        // A numbered badge on the ring's upper left; the slide lists what each number means.
+        const rx = bw / 2 + 12, ry = bh / 2 + 10;
+        const bx = Math.min(Math.max(cx - rx * 0.72, 16), w - 16), by = Math.min(Math.max(cy - ry * 0.72, 16), h - 16);
+        ctx.save();
+        ctx.fillStyle = C.red; ctx.beginPath(); ctx.arc(bx, by, 15, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.font = "700 18px Inter, system-ui, sans-serif"; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(String(i + 1), bx, by + 1);
+        ctx.restore();
+      });
+      canvas.dataset.drawn = 'true';
+    };
+    void document.fonts.load("700 20px 'Kalam'").then(() => { ready = true; draw(); });
+    const ro = new ResizeObserver(draw);
+    ro.observe(el);
+    const mo = new MutationObserver(() => requestAnimationFrame(draw));
+    mo.observe(el, { childList: true, subtree: true });
+    return () => { ro.disconnect(); mo.disconnect(); };
+  }, [flaws]);
+  return (
+    <div ref={host} className="talk-fit" style={{ position: 'relative' }}>
+      <ScaleToFit height={0} fill maxScale={1.8}>
+        <VegaLiteView spec={spec} renderer="svg" />
+      </ScaleToFit>
+      <canvas ref={canvasRef} className="talk-sketch" style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }} />
+    </div>
+  );
+}
+
+/** The numbered problems a FlawedVegaLite circles, as readable text. */
+export function FlawList({ flaws }: { flaws: Flaw[] }) {
+  return (
+    <ol className="talk-flaws">
+      {flaws.map((flaw, i) => <li key={flaw.label}><span>{i + 1}</span>{flaw.label}</li>)}
+    </ol>
   );
 }
 
@@ -217,6 +292,18 @@ export function lineDiff(prev: unknown, next: unknown, width = 60): { plus: numb
   return { plus, minus: addedLines(b, a).filter(Boolean).length };
 }
 export const plainRows = (rows: CodeRow[]): CodeRow[] => rows.map(({ text, gap }) => ({ text, gap }));
+
+// Layouts for a code panel: the same rows, laid out for whatever width the panel gives them.
+type Layout = (cols: number) => CodeRow[];
+/** A step's spec, its changes marked and unchanged runs folded, at the panel's width. */
+export const stepLayout = (next: unknown, prev?: unknown): Layout => (cols) => stepRows(next, prev, cols);
+/** The whole new spec, its changes marked, at the panel's width. */
+export const fullLayout = (next: unknown, prev: unknown): Layout => (cols) => fullRows(next, prev, cols);
+/** A spec at the panel's width, the lines matching `hot` marked. */
+export const specLayout = (value: unknown, hot?: RegExp): Layout => (cols) =>
+  specText(value, cols).split('\n').map((text) => (hot?.test(text) ? { text, hot: true } : { text }));
+/** A layout with its marks taken off: the previous step, shown plain. */
+export const plainLayout = (layout: Layout): Layout => (cols) => plainRows(layout(cols));
 export const textRows = (text: string, hot = false): CodeRow[] => text.trimEnd().split('\n').map((t) => ({ text: t, hot }));
 
 const CHAR_W = 0.62, LINE_H = 1.45;
@@ -245,17 +332,29 @@ function sampled(rows: CodeRow[], k: number): CodeRow[] {
 }
 
 /**
- * Code set at the largest size that fits its box. Long lines wrap under their own indent. When the
- * rows still do not fit, each changed run shows its first lines and says how many more it has.
+ * Rows for a code panel: fixed, or laid out for a width in characters. A spec laid out for the
+ * panel's own width breaks between its keys, where a fixed layout would be wrapped mid-pair.
  */
-export function Code({ rows, max = 22, min = 14, tone = 'flint' }: {
-  rows: CodeRow[]; max?: number; min?: number;
+export type CodeSource = CodeRow[] | ((cols: number) => CodeRow[]);
+
+/** The narrowest layout a spec is reflowed to; below it, lines wrap under their indent instead. */
+const MIN_COLS = 28;
+const colsAt = (w: number, size: number) => Math.max(8, Math.floor(w / (CHAR_W * size)));
+
+/**
+ * Code set at the largest size that fits its box. A spec given as a layout function is reflowed to
+ * the columns each size allows; fixed rows wrap long lines under their own indent. When the rows
+ * still do not fit, each changed run shows its first lines and says how many more it has.
+ */
+export function Code({ rows: source, max = 22, min = 14, tone = 'flint' }: {
+  rows: CodeSource; max?: number; min?: number;
   /** Flint code marks its changes in blue; Vega-Lite code marks them in red, to show what it costs. */
   tone?: 'flint' | 'vl';
 }) {
   const ref = useRef<HTMLPreElement>(null);
-  const [fit, setFit] = useState<{ size: number; k: number; shown: number }>({ size: max, k: Infinity, shown: Infinity });
-  const key = rows.map((r) => (r.hot ? '+' : r.gap ? '~' : ' ') + r.text).join('\n');
+  const [fit, setFit] = useState<{ size: number; k: number; shown: number; cols: number }>({ size: max, k: Infinity, shown: Infinity, cols: 60 });
+  const layout = (cols: number) => (typeof source === 'function' ? source(Math.max(MIN_COLS, cols - 1)) : source);
+  const key = layout(60).map((r) => (r.hot ? '+' : r.gap ? '~' : ' ') + r.text).join('\n');
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -266,24 +365,29 @@ export function Code({ rows, max = 22, min = 14, tone = 'flint' }: {
       if (w <= 0 || h <= 0) return;
       // Screen lines a list of rows takes at a size, wrapping under each row's indent.
       const lines = (list: CodeRow[], size: number) => {
-        const cols = Math.max(8, Math.floor(w / (CHAR_W * size)));
+        const cols = colsAt(w, size);
         return list.map(({ text }) => {
           const hang = Math.min(cols - 4, indentOf(text) + 2);
           return text.length <= cols ? 1 : 1 + Math.ceil((text.length - cols) / (cols - hang));
         });
       };
       const fits = (list: CodeRow[], size: number) => sum(lines(list, size)) <= Math.floor(h / (LINE_H * size));
-      let next = { size: min, k: Infinity, shown: Infinity };
+      const narrow = colsAt(w, min);
+      const rows = layout(narrow);
+      let next = { size: min, k: Infinity, shown: Infinity, cols: narrow };
       let found = false;
-      for (let size = max; size >= min && !found; size -= 0.5) if (fits(rows, size)) { next = { size, k: Infinity, shown: Infinity }; found = true; }
-      for (let k = rows.length; k >= 1 && !found; k--) if (fits(sampled(rows, k), min)) { next = { size: min, k, shown: Infinity }; found = true; }
+      for (let size = max; size >= min && !found; size -= 0.5) {
+        const cols = colsAt(w, size);
+        if (fits(layout(cols), size)) { next = { size, k: Infinity, shown: Infinity, cols }; found = true; }
+      }
+      for (let k = rows.length; k >= 1 && !found; k--) if (fits(sampled(rows, k), min)) { next = { size: min, k, shown: Infinity, cols: narrow }; found = true; }
       if (!found) {
         const list = sampled(rows, 1), per = lines(list, min), budget = Math.floor(h / (LINE_H * min));
         let used = 1, shown = 0;
         while (shown < list.length && used + per[shown] <= budget) used += per[shown++];
-        next = { size: min, k: 1, shown };
+        next = { size: min, k: 1, shown, cols: narrow };
       }
-      setFit((f) => (f.size === next.size && f.k === next.k && f.shown === next.shown ? f : next));
+      setFit((f) => (f.size === next.size && f.k === next.k && f.shown === next.shown && f.cols === next.cols ? f : next));
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -291,7 +395,7 @@ export function Code({ rows, max = 22, min = 14, tone = 'flint' }: {
     return () => ro.disconnect();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, max, min]);
-  const list = sampled(rows, fit.k);
+  const list = sampled(layout(fit.cols), fit.k);
   const shown = fit.shown < list.length ? [...list.slice(0, fit.shown), hiddenRow(list.slice(fit.shown))] : list;
   return (
     <pre ref={ref} className={`talk-code ${tone}`} style={{ fontSize: fit.size }}>

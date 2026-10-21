@@ -48,6 +48,29 @@ export function McpExperience() {
   );
 }
 
+/** One of the introduction's two chat turns, without its heading: the talk deck shows them one to a slide. */
+export function McpChatTurn({ kind }: { kind: 'chart' | 'board' }) {
+  const { t } = useTranslation();
+  useMcpStyles(SCOPE);
+  useHostPage();
+  return (
+    <>
+      <style>{experienceStyles}</style>
+      <SimpleStory>
+        {kind === 'chart' ? (
+          <ChatTurn ask={t('mcp.exp.simple.chartAsk')} reply={t('mcp.exp.simple.chartReply')} placeholder={430}
+            card={(onContext) => <ChartCard card={SIMPLE_CHART} onContext={onContext} />}
+          />
+        ) : (
+          <ChatTurn ask={t('mcp.exp.simple.boardAsk')} reply={t('mcp.exp.simple.boardReply')} placeholder={560}
+            card={(onContext) => <BoardCard board={SIMPLE_BOARD} onContext={onContext} />}
+          />
+        )}
+      </SimpleStory>
+    </>
+  );
+}
+
 /** The step-by-step stories, one chart and then a board, each a chat drawn with the real MCP cards. */
 export function McpExperienceStories() {
   useMcpStyles(SCOPE);
@@ -62,11 +85,11 @@ export function McpExperienceStories() {
 }
 
 /** One ask and what the agent produces, in a chat window that grows to hold it. */
-function SimpleStory({ heading, children }: { heading: string; children: ReactNode }) {
+function SimpleStory({ heading, children }: { heading?: string; children: ReactNode }) {
   const { t } = useTranslation();
   return (
-    <section className="mcp-exp mcp-exp-simple" aria-label={heading}>
-      <h3 className="mcp-exp-heading">{heading}</h3>
+    <section className="mcp-exp mcp-exp-simple" aria-label={heading ?? t('mcp.exp.chatTitle')}>
+      {heading && <h3 className="mcp-exp-heading">{heading}</h3>}
       <div className="mcp-exp-chat mcp-exp-chat-auto">
         <div className="mcp-exp-chat-bar">
           <span className="mcp-exp-dot" style={{ background: '#ec6a5e' }} />
@@ -134,7 +157,7 @@ const BOARD_WIDTH = 760;
 
 /** A board laid out at `BOARD_WIDTH` and zoomed to the chat's width, so it keeps its two columns. */
 function BoardCard({ board, editing, onContext }: { board: Board; editing?: boolean; onContext: (text: string) => void }) {
-  const app = useMockBoardApp(board, onContext);
+  const app = useMockBoardApp(onContext);
   const ref = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState(1);
   // The card has no prop for layout mode, so the story opens it with the card's own button.
